@@ -17,7 +17,7 @@ import torch.nn as nn
 import math
 from typing import Optional
 import torch.nn.functional as F
-from diffusers.models.activations import get_activation
+#from diffusers.models.activations import get_activation
 from cosyvoice.transformer.transformer import BasicTransformerBlock
 
 
@@ -71,6 +71,7 @@ class ResnetBlock1D(torch.nn.Module):
         return output
 
 
+
 class Downsample1D(nn.Module):
     def __init__(self, dim):
         super().__init__()
@@ -85,7 +86,6 @@ class TimestepEmbedding(nn.Module):
         self,
         in_channels: int,
         time_embed_dim: int,
-        act_fn: str = "silu",
         out_dim: int = None,
         post_act_fn: Optional[str] = None,
         cond_proj_dim=None,
@@ -99,7 +99,7 @@ class TimestepEmbedding(nn.Module):
         else:
             self.cond_proj = None
 
-        self.act = get_activation(act_fn)
+        self.act = nn.SiLU()
 
         if out_dim is not None:
             time_embed_dim_out = out_dim
@@ -110,7 +110,7 @@ class TimestepEmbedding(nn.Module):
         if post_act_fn is None:
             self.post_act = None
         else:
-            self.post_act = get_activation(post_act_fn)
+            self.post_act = nn.SiLU()
 
     def forward(self, sample, condition=None):
         if condition is not None:
@@ -197,7 +197,6 @@ class ConditionalDecoder(nn.Module):
         self.time_mlp = TimestepEmbedding(
             in_channels=in_channels,
             time_embed_dim=time_embed_dim,
-            act_fn="silu",
         )
         self.down_blocks = nn.ModuleList([])
         self.mid_blocks = nn.ModuleList([])
@@ -291,6 +290,7 @@ class ConditionalDecoder(nn.Module):
                 nn.init.kaiming_normal_(m.weight, nonlinearity="relu")
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
+
 
     def forward(self, x, mask, mu, t, spks=None, cond=None):
         """Forward pass of the UNet1DConditional model.
@@ -388,3 +388,4 @@ class ConditionalDecoder(nn.Module):
         x = self.final_block(x, mask_up)
         output = self.final_proj(x * mask_up)
         return output * mask
+    

@@ -19,7 +19,8 @@
 import torch
 from torch import nn, sin, pow
 from torch.nn import Parameter
-from diffusers.models.lora import LoRACompatibleLinear
+from cosyvoice.transformer.lora import LoRACompatibleLinear
+#from diffusers.models.lora import LoRACompatibleLinear
 import torch.nn.functional as F
 
 

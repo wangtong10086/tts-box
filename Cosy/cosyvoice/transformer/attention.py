@@ -17,12 +17,11 @@
 """Multi-Head Attention layer definition."""
 
 import math
-from typing import Tuple, Optional, Callable
+from typing import Tuple, Optional
 
 import torch
 from torch import nn
 import torch.nn.functional as F
-import inspect
 from cosyvoice.transformer.normalization import SpatialNorm
 
 
