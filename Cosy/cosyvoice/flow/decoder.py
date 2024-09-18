@@ -309,6 +309,8 @@ class ConditionalDecoder(nn.Module):
         Returns:
             _type_: _description_
         """
+        
+        #print_variable_info(x=x, mask=mask, mu=mu, t=t, spks=spks, cond=cond)
 
         t = self.time_embeddings(t).to(t.dtype)
         t = self.time_mlp(t)
@@ -387,5 +389,19 @@ class ConditionalDecoder(nn.Module):
             x = upsample(x * mask_up)
         x = self.final_block(x, mask_up)
         output = self.final_proj(x * mask_up)
-        return output * mask
+        output = output * mask
+        
+        #print_variable_info(output=output)
+        return output
     
+    
+import numpy as np
+def print_variable_info(**kwargs):
+    for name, var in kwargs.items():
+        if isinstance(var, torch.Tensor):
+            print(f"{name}: shape = {var.shape}, dtype = {var.dtype}")
+        elif isinstance(var, np.ndarray):
+            print(f"{name}: shape = {var.shape}, dtype = {var.dtype}")
+        else:
+            # 对于非张量/数组类型，打印类型而不是形状和dtype
+            print(f"{name}: type = {type(var)}")

@@ -11,6 +11,7 @@ import torch
 import torch.nn.functional as F
 from cosyvoice.cli.cosyvoice import CosyVoice
 from hyperpyyaml import load_hyperpyyaml
+import onnxruntime as ort
 
 class Optimizer():
     def __init__(
@@ -460,30 +461,30 @@ class FlowModelStage1(BaseModel):
 
     def get_input_names(self):
         return [
-            'token',             
-            'token_len',           
-            'token_len1', 
-            'token_len2',
-            'prompt_feat', 
-            'mask'          
+            "token",
+            "token_len",
+            "prompt_token",
+            "prompt_token_len",
+            "prompt_feat",
+            "embedding"      
         ]
 
 
     # speech_token.shape: torch.Size([1, 227])  -- speech_token.shape: torch.Size([1, 559])
     def get_output_names(self):
-        return ['h', 'conds']
+        return ['h', 'mask', 'embedding', 'conds']
 
 
     def get_dynamic_axes(self):
         return {
             # Inputs
-            'token': {0: 'L'}, 
-            'token_len': {0: 'L'}, 
-            'prompt_feat': {1: 'L'},  
-            'mask': {1: 'L'},
+            'token': {0: 'L'},  
+            'prompt_token': {1: 'L'}, 
+            'prompt_feat': {1: 'L'},
 
             # Outputs
-            'h': {1: 'L'},  
+            'h': {1: 'L'}, 
+            'mask': {1: 'L'}, 
             'conds': {2: 'L'}  
         }
 
@@ -492,39 +493,41 @@ class FlowModelStage1(BaseModel):
 
         # Determine data type
         '''
-        token,
-        token_len,
-        token_len1,
-        token_len2,
-        prompt_feat,
-        mask
-        h: torch.Size([1, 1230, 80])  fp32
-        conds: torch.Size([1, 80, 1230]) fp32
+        token: shape = torch.Size([211]), dtype = torch.int64
+        token_len: shape = torch.Size([1]), dtype = torch.int32 value:211
+        prompt_token: shape = torch.Size([1, 302]), dtype = torch.int32
+        prompt_token_len: shape = torch.Size([1]), dtype = torch.int32  value:302
+        prompt_feat: shape = torch.Size([1, 520, 80]), dtype = torch.float32
+        embedding: shape = torch.Size([1, 192]), dtype = torch.float32
         
-        h: torch.Size([1, 883, 80])
-        conds: torch.Size([1, 80, 883])
+        h: shape = torch.Size([1, 883, 80]), dtype = torch.float32
+        mask: shape = torch.Size([1, 883]), dtype = torch.float32
+        embedding: shape = torch.Size([1, 80]), dtype = torch.float32
+        conds: shape = torch.Size([1, 80, 883]), dtype = torch.float32
+        
+        
+        token: shape = torch.Size([541]), dtype = torch.int64
+        token_len: shape = torch.Size([1]), dtype = torch.int32
+        prompt_token: shape = torch.Size([1, 174]), dtype = torch.int32
+        prompt_token_len: shape = torch.Size([1]), dtype = torch.int32
+        prompt_feat: shape = torch.Size([1, 299, 80]), dtype = torch.float32
+        embedding: shape = torch.Size([1, 192]), dtype = torch.float32
+        
+        h: shape = torch.Size([1, 1230, 80]), dtype = torch.float32
+        mask: shape = torch.Size([1, 1230]), dtype = torch.float32
+        embedding: shape = torch.Size([1, 80]), dtype = torch.float32
+        conds: shape = torch.Size([1, 80, 1230]), dtype = torch.float32
         '''
-
-        token_dtype = torch.int64
-        prompt_feat_dtype = torch.float32
-        mask_dtype = torch.float32
-
-        # 设置张量的形状
-        token_shape = (1, 513)  # 或 (541,) 根据需要调整
-        prompt_feat_shape = (1, 520, 80)  # 或 (1, 299, 80)
-        mask_shape = (1, 513, 1)  # (1, 715, 1)
-
-        # 生成张量
-        token = torch.randint(low=0, high=1000, size=token_shape, dtype=token_dtype, device=self.device)
-        token_len = torch.tensor([token_shape[1]], dtype=torch.int32)
         
-        token_len1 = 302
-        token_len2 = 211
-        
-        prompt_feat = torch.randn(prompt_feat_shape, dtype=prompt_feat_dtype, device=self.device)
-        mask = torch.randn(mask_shape, dtype=mask_dtype, device=self.device)
+        token = torch.zeros(211, dtype=torch.int64)  # shape: [211], dtype: int64
+        token_len = torch.tensor([211], dtype=torch.int32)  # shape: [1], dtype: int32, value: 211
+        prompt_token = torch.zeros((1, 302), dtype=torch.int32)  # shape: [1, 302], dtype: int32
+        prompt_token_len = torch.tensor([302], dtype=torch.int32)  # shape: [1], dtype: int32, value: 302
+        prompt_feat = torch.zeros((1, 520, 80), dtype=torch.float32)  # shape: [1, 520, 80], dtype: float32
+        embedding = torch.zeros((1, 192), dtype=torch.float32)  # shape: [1, 192], dtype: float32
 
-        return token, token_len, token_len1, token_len2, prompt_feat, mask
+
+        return token, token_len, prompt_token, prompt_token_len, prompt_feat, embedding
 
 
 
@@ -549,34 +552,33 @@ class FlowModelStage2(BaseModel):
 
     def get_input_names(self):
         return [
-            'h',             
-            'mask',           
-            'conds',
-            'mel_len1', 
-            'embedding'       
+            "x", 
+            "mask", 
+            "mu", 
+            "t", 
+            "spks", 
+            "cond"      
         ]
 
 
     # speech_token.shape: torch.Size([1, 227])  -- speech_token.shape: torch.Size([1, 559])
     def get_output_names(self):
-        return ['feat']
+        return ['output']
 
-    '''
-    feat.shape: torch.Size([1, 80, 935])
-    feat.dtype: torch.float32
-    feat.shape: torch.Size([1, 80, 377])
-    feat.dtype: torch.float32
-    '''
+   
     def get_dynamic_axes(self):
         return {
             # Inputs
-            'h': {1: 'L'},  
-            'mask': {1: 'L'},  
-            'conds': {1: 'L'},  
+            'x': {2: 'L'}, 
+            'mask': {2: 'L'}, 
+            'mu': {2: 'L'}, 
+            't': {0: 'L'},  
+            'cond': {2: 'L'}, 
+             
 
             # Outputs
             # Assuming 'logp' is an output with variable sequence length
-            'feat': {2: 'L'}  # Batch size & feat length
+            'output': {2: 'L'}  # Batch size & feat length
         }
 
 
@@ -584,22 +586,35 @@ class FlowModelStage2(BaseModel):
         
         
         '''
-        h, mask, conds, mel_len1, embedding
+        x: shape = torch.Size([1, 80, 1230]), dtype = torch.float32
+        mask: shape = torch.Size([1, 1, 1230]), dtype = torch.float32
+        mu: shape = torch.Size([1, 80, 1230]), dtype = torch.float32
+        t: shape = torch.Size([1]), dtype = torch.float32
+        spks: shape = torch.Size([1, 80]), dtype = torch.float32
+        cond: shape = torch.Size([1, 80, 1230]), dtype = torch.float32
+        output: shape = torch.Size([1, 80, 1230]), dtype = torch.float32
+        
+        x: shape = torch.Size([1, 80, 883]), dtype = torch.float32
+        mask: shape = torch.Size([1, 1, 883]), dtype = torch.float32
+        mu: shape = torch.Size([1, 80, 883]), dtype = torch.float32
+        t: shape = torch.Size([1]), dtype = torch.float32
+        spks: shape = torch.Size([1, 80]), dtype = torch.float32
+        cond: shape = torch.Size([1, 80, 883]), dtype = torch.float32
+        output: shape = torch.Size([1, 80, 883]), dtype = torch.float32
         '''
 
         # Determine data type
 
-        h = torch.zeros(1, 883, 80, dtype=torch.float32)  # 形状为[1, 883, 80]的全0张量
-        mask = torch.zeros(1, 883, dtype=torch.float32)  # 形状为[1, 883]的全0张量
-        conds = torch.zeros(1, 80, 883, dtype=torch.float32)  # 形状为[1, 80, 883]的全0张量
-        embedding = torch.zeros(1, 80, dtype=torch.float32)  # 形状为[1, 80]的全0张量
+        x = torch.randn(1, 80, 1230, dtype=torch.float32)
+        mask = torch.randn(1, 1, 1230, dtype=torch.float32)
+        mu = torch.randn(1, 80, 1230, dtype=torch.float32)
+        t = torch.randn(1, dtype=torch.float32)
+        spks = torch.randn(1, 80, dtype=torch.float32)
+        cond = torch.randn(1, 80, 1230, dtype=torch.float32)
 
-        mel_len1 = 42
-
-        return h, mask, conds, mel_len1, embedding
-
-
-
+        return x, mask, mu, t, spks, cond
+    
+    
 
 class HifiModel(BaseModel):
     def __init__(self,

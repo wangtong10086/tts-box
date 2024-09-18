@@ -135,7 +135,38 @@ class ConditionalCFM(BASECFM):
         in_channels = in_channels + (spk_emb_dim if n_spks > 0 else 0)
         # Just change the architecture of the estimator here
         self.estimator = estimator
+        
+        
+    def forward(self, mu, mask, n_timesteps, temperature=1.0, spks=None, cond=None):
+        z = torch.randn_like(mu) * temperature
+        t_span = torch.linspace(0, 1, n_timesteps + 1, device=mu.device, dtype=mu.dtype)
+        if self.t_scheduler == 'cosine':
+            t_span = 1 - torch.cos(t_span * 0.5 * torch.pi)
 
+        t, dt = t_span[0], t_span[1] - t_span[0]
+        t = t.unsqueeze(dim=0)
+        x = z.clone()
+
+        for step in range(1, len(t_span)):
+            dphi_dt = self.estimator.forward(x, mask, mu, t, spks, cond)
+            if self.inference_cfg_rate > 0:
+                cfg_dphi_dt = self.estimator.forward(
+                    x, mask,
+                    torch.zeros_like(mu), t,
+                    torch.zeros_like(spks) if spks is not None else None,
+                    torch.zeros_like(cond)
+                )
+                dphi_dt = ((1.0 + self.inference_cfg_rate) * dphi_dt -
+                           self.inference_cfg_rate * cfg_dphi_dt)
+            x = x + dt * dphi_dt
+            t = t + dt
+            if step < len(t_span) - 1:
+                dt = t_span[step + 1] - t_span[step]
+
+        return x
+        
+    
+    '''
     @torch.inference_mode()
     def forward(self, mu, mask, n_timesteps, temperature=1.0, spks=None, cond=None):
         """Forward diffusion
@@ -160,6 +191,7 @@ class ConditionalCFM(BASECFM):
         if self.t_scheduler == 'cosine':
             t_span = 1 - torch.cos(t_span * 0.5 * torch.pi)
         return self.solve_euler(z, t_span=t_span, mu=mu, mask=mask, spks=spks, cond=cond)
+    '''
 
     def solve_euler(self, x, t_span, mu, mask, spks, cond):
         """
@@ -202,21 +234,23 @@ class ConditionalCFM(BASECFM):
                 dt = t_span[step + 1] - t
 
         return sol[-1]
+        
 
     def forward_estimator(self, x, mask, mu, t, spks, cond):
-        if isinstance(self.estimator, torch.nn.Module):
-            return self.estimator.forward(x, mask, mu, t, spks, cond)
-        else:
-            ort_inputs = {
-                'x': x.cpu().numpy(),
-                'mask': mask.cpu().numpy(),
-                'mu': mu.cpu().numpy(),
-                't': t.cpu().numpy(),
-                'spks': spks.cpu().numpy(),
-                'cond': cond.cpu().numpy()
-            }
-            output = self.estimator.run(None, ort_inputs)[0]
-            return torch.tensor(output, dtype=x.dtype, device=x.device)
+        return self.estimator.forward(x, mask, mu, t, spks, cond)
+        #if isinstance(self.estimator, torch.nn.Module):
+        #    return self.estimator.forward(x, mask, mu, t, spks, cond)
+        #else:
+        #    ort_inputs = {
+        #        'x': x.cpu().numpy(),
+        #        'mask': mask.cpu().numpy(),
+        #        'mu': mu.cpu().numpy(),
+        #        't': t.cpu().numpy(),
+        #        'spks': spks.cpu().numpy(),
+        #        'cond': cond.cpu().numpy()
+        #    }
+        #    output = self.estimator.run(None, ort_inputs)[0]
+        #    return torch.tensor(output, dtype=x.dtype, device=x.device)
 
     def compute_loss(self, x1, mask, mu, spks=None, cond=None):
         """Computes diffusion loss

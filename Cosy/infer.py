@@ -31,7 +31,7 @@ func = cosyvoice.inference_zero_shot_without_stream
 
 #cosyvoice = CosyVoiceONNX('model_convert/onnx')
 
-
+'''
 # 加载 zero-shot 提示语音
 prompt_speech_16k = load_wav('zero_shot_prompt.wav', 16000)
 # 使用非流模式执行推理
@@ -49,7 +49,7 @@ model_outputs = func(
     '往生堂定时大酬宾，购一送一，购二送三，多购多得。',
     prompt_speech_16k
 )
-'''
+
 # 保存生成的语音
 for i, model_output in enumerate(model_outputs):
     torchaudio.save('zero_shot_{}.wav'.format(i), model_output['tts_speech'], 22050)

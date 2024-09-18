@@ -10,7 +10,7 @@ os.makedirs(onnx_directory, exist_ok=True)
 print(f"Using ONNX directory: {onnx_directory}")
 
 # 通用的模型导出函数
-def export_model(model_instance, model_name, model_path, onnx_directory, onnx_opset=14):
+def export_model(model_instance, model_name, model_path, onnx_directory, onnx_opset=20):
     try:
         print(f"Exporting {model_name} for {model_path}...")
         onnx_path = os.path.join(onnx_directory, f"{model_name}.onnx")
@@ -66,6 +66,6 @@ if __name__ == '__main__':
     model_path = "pretrained_models/CosyVoice-300M"
     #llm_model_convert1(model_path)
     #llm_model_convert2(model_path)
-    #flow_model_stage1_convert(model_path)
-    flow_model_stage2_convert(model_path)
+    flow_model_stage1_convert(model_path)
+    #flow_model_stage2_convert(model_path)
     #hift_model_convert(model_path)
