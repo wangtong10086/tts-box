@@ -176,7 +176,8 @@ class CosyVoiceModel:
     def __init__(self,
                  llm_model_stage1_path: str,
                  llm_model_stage2_path: str,
-                 flow_model_path: str,
+                 flow_model_stage1_path: str,
+                 flow_model_stage2_path: str,
                  hift_model_path: str,
                  providers = ['CUDAExecutionProvider']  # 指定使用 CUDA
                 ):
@@ -186,8 +187,10 @@ class CosyVoiceModel:
         self.llm_stage1_session = ort.InferenceSession(llm_model_stage1_path, providers=providers)
         print("init llm_stage2_session")
         self.llm_stage2_session = ort.InferenceSession(llm_model_stage2_path, providers=providers)
-        print("init flow_session")
-        self.flow_session = ort.InferenceSession(flow_model_path, providers=providers)
+        print("init flow_stage1_session")
+        self.flow_stage1_session = ort.InferenceSession(flow_model_stage1_path, providers=providers)
+        print("init flow_stage2_session")
+        self.flow_stage2_session = ort.InferenceSession(flow_model_stage2_path, providers=providers)
         print("init hift_session")
         self.hift_session = ort.InferenceSession(hift_model_path, providers=providers)
         self.token_min_hop_len = 100
@@ -209,6 +212,7 @@ class CosyVoiceModel:
         self.hift_cache_dict = {}
         
         self.speech_token_size = 4096
+        self.llm_input_size = 1024
         self.sampling = ras_sampling
         self.istft_params: tp.Dict[str, int] = {"n_fft": 16, "hop_len": 4}
         self.stft_window = torch.from_numpy(get_window("hann", self.istft_params["n_fft"], fftbins=True).astype(np.float32))
@@ -267,7 +271,7 @@ class CosyVoiceModel:
         return inverse_transform
 
 
-    def llm_job(self, text, prompt_text, llm_prompt_speech_token, llm_embedding, uuid, embedding):
+    def llm_job(self, text, prompt_text, llm_prompt_speech_token, llm_embedding, uuid):
         sampling = 25
         max_token_text_ratio = 20
         min_token_text_ratio = 2
@@ -310,23 +314,17 @@ class CosyVoiceModel:
         out_tokens = []
         offset = 0
 
-        # Stage 2 的输入定义
-        inputs_stage2 = {
-            "lm_input": lm_input.numpy(),
-            "att_cache": att_cache,
-            "cnn_cache": cnn_cache
-        }
-
         # Stage 2 的输入名称
         input_names_stage2 = [input.name for input in self.llm_stage2_session.get_inputs()]
         
 
+        speech_embedding = torch.nn.Embedding(self.speech_token_size, self.llm_input_size)
         # 循环推理
         for i in range(max_len):
             logp, att_cache_out, cnn_cache_out = self.llm_stage2_session.run(None, {
-                input_names_stage2[0]: inputs_stage2["lm_input"],
-                input_names_stage2[1]: inputs_stage2["att_cache"],
-                input_names_stage2[2]: inputs_stage2["cnn_cache"]
+                input_names_stage2[0]: lm_input,
+                input_names_stage2[1]: att_cache_out,
+                input_names_stage2[2]: cnn_cache_out
             })
 
             # 采样生成 token
@@ -338,12 +336,8 @@ class CosyVoiceModel:
 
             out_tokens.append(top_ids)
             offset += lm_input.shape[1]
-            lm_input = embedding.weight[top_ids].reshape(1, 1, -1).numpy()
-
-            # 更新 Stage 2 的输入
-            inputs_stage2["lm_input"] = lm_input
-            inputs_stage2["att_cache"] = att_cache_out
-            inputs_stage2["cnn_cache"] = cnn_cache_out
+            lm_input = speech_embedding.weight[top_ids].reshape(1, 1, -1).numpy()
+            
 
         # 将生成的 tokens 转换为 numpy 数组并存储
         out_tokens_numpy = np.array(out_tokens, dtype=np.int64)
@@ -356,8 +350,64 @@ class CosyVoiceModel:
         self.llm_end_dict[uuid] = True
 
 
+    '''
+    mu=h.transpose(1, 2).contiguous(),
+            mask=mask.unsqueeze(1),
+            spks=embedding,
+            cond=conds,
+            n_timesteps=10
+    '''
+    def ODE_Solver(self, h, mask, n_timesteps=10, temperature=1.0, inference_cfg_rate=0.7, embedding=None, conds=None):
+        z = torch.randn_like(mu) * temperature
+        t_span = torch.linspace(0, 1, n_timesteps + 1, device=mu.device, dtype=mu.dtype)
+        t_span = 1 - torch.cos(t_span * 0.5 * torch.pi)
+
+        t, dt = t_span[0], t_span[1] - t_span[0]
+        t = t.unsqueeze(dim=0)
+        x = z.clone()
+        
+        mu=h.transpose(1, 2).contiguous()
+        
+        inputs = {
+            'x': x.numpy(),
+            'mask': mask.numpy(),
+            'mu': mu.numpy(),     
+            't': t.numpy(),
+            'spks': embedding.numpy(),
+            'cond': conds.numpy()
+        }
+        input_names = [input.name for input in self.flow_session.get_inputs()]
+        for step in range(1, len(t_span)):
+            dphi_dt = self.flow_stage2_session.run(None, {
+                input_names[0]: inputs["x"],
+                input_names[1]: inputs["mask"],
+                input_names[2]: inputs["mu"],
+                input_names[3]: inputs["t"],
+                input_names[4]: inputs["spks"],
+                input_names[5]: inputs["cond"]
+            })
+            if inference_cfg_rate > 0:
+                cfg_dphi_dt = self.flow_stage2_session.run(None, {
+                    input_names[0]: x.numpy(),
+                    input_names[1]: mask.numpy(),
+                    input_names[2]: torch.zeros_like(mu).numpy(),
+                    input_names[3]: t.numpy(),
+                    input_names[4]: torch.zeros_like(embedding).numpy() if embedding is not None else None,
+                    input_names[5]: torch.zeros_like(conds).numpy()
+                })
+                dphi_dt = ((1.0 + inference_cfg_rate) * dphi_dt -
+                           inference_cfg_rate * cfg_dphi_dt)
+            x = x + dt * dphi_dt
+            t = t + dt
+            if step < len(t_span) - 1:
+                dt = t_span[step + 1] - t_span[step]
+
+        return x
+
     
     def token2wav(self, token, prompt_token, prompt_feat, embedding, uuid, finalize=False):
+
+        mel_len1 = prompt_feat.shape[1]
 
         inputs = {
             'token': token.numpy(),            
@@ -370,7 +420,7 @@ class CosyVoiceModel:
 
         # 获取输入名称并运行模型
         input_names = [input.name for input in self.flow_session.get_inputs()]
-        tts_mel = self.flow_session.run(None, {
+        h, mask, embedding, conds = self.flow_stage1_session.run(None, {
             input_names[0]: inputs["token"],
             input_names[1]: inputs["token_len"],
             input_names[2]: inputs["prompt_token"],
@@ -378,7 +428,10 @@ class CosyVoiceModel:
             input_names[4]: inputs["prompt_feat"],
             input_names[5]: inputs["embedding"]
         })
-
+        
+        feat = self.ODE_Solver(h, mask, n_timesteps=10, temperature=1.0, inference_cfg_rate=0.7, embedding=embedding, conds=conds)
+        tts_mel = feat[:, :, mel_len1:]
+        
         # Mel 重叠淡入淡出处理
         if self.mel_overlap_dict[uuid] is not None:
             tts_mel = fade_in_out(tts_mel, self.mel_overlap_dict[uuid], self.mel_window)
