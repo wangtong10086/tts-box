@@ -206,14 +206,12 @@ class MaskedDiffWithXvec(torch.nn.Module):
                   embedding):
         
         print_variable_info(token=token,
-                token_len=token_len,
                 prompt_token=prompt_token,
-                prompt_token_len=prompt_token_len,
                 prompt_feat=prompt_feat,
                 embedding=embedding)
         
-        print(f"token_len: {token_len}")
-        print(f"prompt_token_len: {prompt_token_len}")
+        #print(f"token_len: {token_len}")
+        #print(f"prompt_token_len: {prompt_token_len}")
         
         
         token = token.unsqueeze(0)
@@ -225,7 +223,8 @@ class MaskedDiffWithXvec(torch.nn.Module):
         token_len1, token_len2 = prompt_token.shape[1], token.shape[1]
         token, token_len = torch.concat([prompt_token, token], dim=1), prompt_token_len + token_len
         mask = (~make_pad_mask(token_len)).float().unsqueeze(-1).to(embedding)
-        
+        print(f"mask: {mask.shape}")
+        print(f"mask: {mask.dtype}")
         
         
         token = self.input_embedding(torch.clamp(token, min=0)) * mask
@@ -244,10 +243,10 @@ class MaskedDiffWithXvec(torch.nn.Module):
         # mask = (~make_pad_mask(feat_len)).to(h)
         mask = (~make_pad_mask(torch.tensor([mel_len1 + mel_len2]))).to(h)
         
-        print_variable_info(h=h,
-                mask=mask,
-                embedding=embedding,
-                conds=conds)
+        #print_variable_info(h=h,
+        #        mask=mask,
+        #        embedding=embedding,
+        #        conds=conds)
         
         feat = self.decoder(
             mu=h.transpose(1, 2).contiguous(),

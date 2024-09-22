@@ -160,6 +160,7 @@ class BaseModel():
         custom_model=None,
         custom_opsets=None,
         verbose=False,
+        dynamo=False,
         *args, 
         **kwargs
     ):
@@ -180,7 +181,8 @@ class BaseModel():
                         output_names=self.get_output_names(),
                         dynamic_axes=self.get_dynamic_axes(),
                         custom_opsets=custom_opsets,  # 使用自定义的 opset 域和版本
-                        verbose=verbose
+                        verbose=verbose,
+                        dynamo=dynamo
                     )
                 if custom_model:
                     with torch.inference_mode():
@@ -274,46 +276,41 @@ class LLMModelStage1(BaseModel):
 
     def get_input_names(self):
         return [
-            'text',              # Text input
-            'text_len',                # Text length input
-            'prompt_text',             # Prompt text input
-            'prompt_text_len',         # Prompt text length input
-            'prompt_speech_token',     # Prompt speech tokens input
-            'prompt_speech_token_len'  # Prompt speech tokens length input
-            'embedding',               # Embedding input 
+            'text',
+            'text_len_input',
+            'prompt_text',
+            'prompt_text_len',
+            'prompt_speech_token',
+            'embedding',              
         ]
 
-
-    # speech_token.shape: torch.Size([1, 227])  -- speech_token.shape: torch.Size([1, 559])
     def get_output_names(self):
-        return ['lm_input', "text_len"]
+        return ['lm_input', "text_len_output", "speech_embedding_weight"]
 
     def get_dynamic_axes(self):
         return {
             # Inputs
-            'text': {1: 'L_text'},  # Batch and sequence length (text)  
-            'prompt_text': {1: 'L_prompt_text'},  # Batch and sequence length (prompt text)
-            'prompt_speech_token': {1: 'L_prompt_speech'},  # Batch and sequence length (prompt speech tokens)
+            'text': {1: 'L'},   
+            'prompt_text': {1: 'L'},  
+            'prompt_speech_token': {1: 'L'},  
             
             # Outputs
-            'lm_input': {1: 'L_text'},  # Batch and sequence length (text input)
+            'lm_input': {1: 'L_text'},  
         }
 
 
     def get_sample_input(self, batch_size=1):
         """
-        生成用于模型推理的样本输入数据，包括文本、提示文本、语音 token 和嵌入向量等。
-
-        Args:
-            batch_size (int): 批次大小。
-            static_shape (bool): 是否使用静态形状，默认为True。如果为False，将对形状进行调整。
-            sampling (int): 采样次数，默认为25。
-            max_token_text_ratio (float): 最大token文本比率，默认为20。
-            min_token_text_ratio (float): 最小token文本比率，默认为2。
-
-        Returns:
-            Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]: 
-            返回一组样本输入数据。
+        text: shape = torch.Size([1, 20]), dtype = torch.int32
+        text_len: shape = torch.Size([1]), dtype = torch.int32
+        prompt_text: shape = torch.Size([1, 30]), dtype = torch.int32
+        prompt_text_len: shape = torch.Size([1]), dtype = torch.int32
+        prompt_speech_token: shape = torch.Size([1, 302]), dtype = torch.int32
+        prompt_speech_token_len: shape = torch.Size([1]), dtype = torch.int32
+        embedding: shape = torch.Size([1, 192]), dtype = torch.float16
+        text_len: tensor([20], device='cuda:0', dtype=torch.int32)
+        prompt_text_len: tensor([30], device='cuda:0', dtype=torch.int32)
+        prompt_speech_token_len: tensor([302], device='cuda:0', dtype=torch.int32)
 
         # ref shape
         text: torch.Tensor,   --  torch.Size([1, 65])  -- torch.Size([1, 22])
@@ -329,23 +326,21 @@ class LLMModelStage1(BaseModel):
         """
 
         # 确定数据类型
-        dtype = torch.float16 if self.fp16 else torch.float32
+        cur_dtype = torch.float16 if self.fp16 else torch.float32
 
-        text = torch.randint(0, 100, (1, 65), dtype=torch.int32, device=self.device)
-        text_len = torch.randint(1, 66, (1,), dtype=torch.int32, device=self.device)
-        prompt_text = torch.randint(0, 100, (1, 16), dtype=torch.int32, device=self.device)
-        prompt_text_len = torch.randint(1, 17, (1,), dtype=torch.int32, device=self.device)
-        prompt_speech_token = torch.randint(0, 100, (1, 174), dtype=torch.int32, device=self.device)
-        prompt_speech_token_len = torch.randint(1, 175, (1,), dtype=torch.int32, device=self.device)
-        embedding = torch.randn(1, 192, dtype=dtype, device=self.device)
+        text = torch.randint(0, 100, (1, 20), dtype=torch.int32, device=self.device)  # 形状 [1, 20], 数据类型 int32
+        text_len_input = torch.tensor([20], dtype=torch.int32, device=self.device)  # 形状 [1], 数据类型 int32
+        prompt_text = torch.randint(0, 100, (1, 30), dtype=torch.int32, device=self.device)  # 形状 [1, 30], 数据类型 int32
+        prompt_text_len = torch.tensor([30], dtype=torch.int32, device=self.device)  # 形状 [1], 数据类型 int32
+        prompt_speech_token = torch.randint(0, 1000, (1, 302), dtype=torch.int32, device=self.device)  # 形状 [1, 302], 数据类型 int32
+        embedding = torch.randn((1, 192), dtype=cur_dtype, device=self.device)  # 形状 [1, 192], 数据类型 float16
 
         return (
             text,
-            text_len,
+            text_len_input,
             prompt_text,
             prompt_text_len,
             prompt_speech_token,
-            prompt_speech_token_len,
             embedding,
         )
 
@@ -466,13 +461,14 @@ class FlowModelStage1(BaseModel):
             "prompt_token",
             "prompt_token_len",
             "prompt_feat",
-            "embedding"      
+            "embedding_input",
+            "mask"      
         ]
 
 
     # speech_token.shape: torch.Size([1, 227])  -- speech_token.shape: torch.Size([1, 559])
     def get_output_names(self):
-        return ['h', 'mask', 'embedding', 'conds']
+        return ['h', 'embedding_output']
 
 
     def get_dynamic_axes(self):
@@ -481,11 +477,10 @@ class FlowModelStage1(BaseModel):
             'token': {0: 'L'},  
             'prompt_token': {1: 'L'}, 
             'prompt_feat': {1: 'L'},
+            'mask': {1: 'L'},
 
             # Outputs
-            'h': {1: 'L'}, 
-            'mask': {1: 'L'}, 
-            'conds': {2: 'L'}  
+            'h': {1: 'L'} 
         }
 
 
@@ -499,6 +494,8 @@ class FlowModelStage1(BaseModel):
         prompt_token_len: shape = torch.Size([1]), dtype = torch.int32  value:302
         prompt_feat: shape = torch.Size([1, 520, 80]), dtype = torch.float32
         embedding: shape = torch.Size([1, 192]), dtype = torch.float32
+        mask: torch.Size([1, 513, 1])
+        mask: torch.float32
         
         h: shape = torch.Size([1, 883, 80]), dtype = torch.float32
         mask: shape = torch.Size([1, 883]), dtype = torch.float32
@@ -524,10 +521,10 @@ class FlowModelStage1(BaseModel):
         prompt_token = torch.zeros((1, 302), dtype=torch.int32)  # shape: [1, 302], dtype: int32
         prompt_token_len = torch.tensor([302], dtype=torch.int32)  # shape: [1], dtype: int32, value: 302
         prompt_feat = torch.zeros((1, 520, 80), dtype=torch.float32)  # shape: [1, 520, 80], dtype: float32
-        embedding = torch.zeros((1, 192), dtype=torch.float32)  # shape: [1, 192], dtype: float32
+        embedding_input = torch.zeros((1, 192), dtype=torch.float32)  # shape: [1, 192], dtype: float32
+        mask = torch.zeros((1, 513, 1), dtype=torch.float32)  # shape: [1, 513, 1], dtype: float32
 
-
-        return token, token_len, prompt_token, prompt_token_len, prompt_feat, embedding
+        return token, token_len, prompt_token, prompt_token_len, prompt_feat, embedding_input, mask
 
 
 

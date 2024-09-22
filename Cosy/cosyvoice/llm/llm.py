@@ -224,25 +224,15 @@ class TransformerLM(torch.nn.Module):
             min_token_text_ratio: float = 2,
     ) -> torch.Tensor:  # 注意这里不再返回生成器，而是返回完整的张量
 
-        '''
-        print("Shapes:")
-        print(text.shape)
-        print(text_len.shape)
-        print(prompt_text.shape)
-        print(prompt_text_len.shape)
-        print(prompt_speech_token.shape)
-        print(prompt_speech_token_len.shape)
-        print(embedding.shape)
-
-        print("Data types:")
-        print(text.dtype)
-        print(text_len.dtype)
-        print(prompt_text.dtype)
-        print(prompt_text_len.dtype)
-        print(prompt_speech_token.dtype)
-        print(prompt_speech_token_len.dtype)
-        print(embedding.dtype)
-        '''
+        #print_variable_info(text=text, text_len=text_len, prompt_text=prompt_text, 
+        #                    prompt_text_len=prompt_text_len, prompt_speech_token=prompt_speech_token,
+        #                    prompt_speech_token_len=prompt_speech_token_len, embedding=embedding)
+        #
+        #print(f"text_len: {text_len}")
+        #print(f"prompt_text_len: {prompt_text_len}")
+        #print(f"prompt_speech_token_len: {prompt_speech_token_len}")
+        
+        #print_variable_info(text=text, prompt_text=prompt_text, llm_prompt_speech_token=prompt_speech_token, llm_embedding=embedding)
         
 
         device = text.device
@@ -284,7 +274,8 @@ class TransformerLM(torch.nn.Module):
         offset = 0
         att_cache, cnn_cache = torch.zeros((0, 0, 0, 0), device=lm_input.device), torch.zeros((0, 0, 0, 0), device=lm_input.device)
         #print(f"self.speech_token_size: {self.speech_token_size}")
-        #print(f"lm_input: {lm_input.shape}")
+        #print(f"lm_input: {lm_input}")
+        #print(f"text_len_output: {text_len}")
         #print(f"att_cache: {att_cache.shape}")
         #print(f"cnn_cache: {cnn_cache.shape}")
         
@@ -292,7 +283,10 @@ class TransformerLM(torch.nn.Module):
             y_pred, att_cache, cnn_cache = self.llm.forward_chunk(lm_input, offset=0, required_cache_size=-1, att_cache=att_cache, cnn_cache=cnn_cache,
                                                                   att_mask=torch.tril(torch.ones((1, lm_input.shape[1], lm_input.shape[1]), device=lm_input.device)).to(torch.bool))
             logp = self.llm_decoder(y_pred[:, -1]).log_softmax(dim=-1)
+            #print(f"logp: {logp}")
             top_ids = self.sampling_ids(logp.squeeze(dim=0), out_tokens, sampling, ignore_eos=True if i < min_len else False).item()
+            #print(f"top_ids: {top_ids}")
+
             if top_ids == self.speech_token_size:
                 break
             out_tokens.append(top_ids)
@@ -303,3 +297,15 @@ class TransformerLM(torch.nn.Module):
         print(f"speech_token.shape: {speech_token.shape}")
         return speech_token  # 返回完整的输出序列
 
+
+
+import numpy as np
+def print_variable_info(**kwargs):
+    for name, var in kwargs.items():
+        if isinstance(var, torch.Tensor):
+            print(f"{name}: shape = {var.shape}, dtype = {var.dtype}")
+        elif isinstance(var, np.ndarray):
+            print(f"{name}: shape = {var.shape}, dtype = {var.dtype}")
+        else:
+            # 对于非张量/数组类型，打印类型而不是形状和dtype
+            print(f"{name}: type = {type(var)}")

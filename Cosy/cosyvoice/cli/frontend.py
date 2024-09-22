@@ -143,11 +143,21 @@ class CosyVoiceFrontEnd:
         return model_input
 
     def frontend_zero_shot(self, tts_text, prompt_text, prompt_speech_16k):
+        # 文字做tokeninzer
         tts_text_token, tts_text_token_len = self._extract_text_token(tts_text)
         prompt_text_token, prompt_text_token_len = self._extract_text_token(prompt_text)
+        # resample 16k -> 25k
         prompt_speech_22050 = torchaudio.transforms.Resample(orig_freq=16000, new_freq=22050)(prompt_speech_16k)
+        # 转换成mel_spectrogram : (num_mels, T) num_mels：Mel滤波器组数量  T：帧数
         speech_feat, speech_feat_len = self._extract_speech_feat(prompt_speech_22050)
+        # 16000采样率, speech_tokenizer.onnx input : feat, feat_len(梅尔普)  output: name: indices tensor: int64[1,Concatindices_dim_1,T]
         speech_token, speech_token_len = self._extract_speech_token(prompt_speech_16k)
+        '''
+        name: input  -- feat
+        tensor: float32[batch_size,sequence_length,80]
+        name: output
+        tensor: float32[batch_size,sequence_length]
+        '''
         embedding = self._extract_spk_embedding(prompt_speech_16k)
         model_input = {'text': tts_text_token, 'text_len': tts_text_token_len,
                        'prompt_text': prompt_text_token, 'prompt_text_len': prompt_text_token_len,

@@ -22,7 +22,38 @@ class MaskedDiffWithXvecStage1(torch.nn.Module):
         self.encoder_proj = torch.nn.Linear(self.encoder.output_size(), output_size)
         self.length_regulator = length_regulator
 
+
+    def forward(self,
+                token,
+                token_len,
+                prompt_token,
+                prompt_token_len,
+                prompt_feat,
+                embedding,
+                mask):
+        
+        token = token.unsqueeze(0)
+        # xvec projection
+        embedding = F.normalize(embedding, dim=1)
+        embedding = self.spk_embed_affine_layer(embedding)
+
+        # concat text and prompt_text
+        token_len1, token_len2 = prompt_token.shape[1], token.shape[1]
+        token, token_len = torch.concat([prompt_token, token], dim=1), prompt_token_len + token_len
+        
+        
+        token = self.input_embedding(torch.clamp(token, min=0)) * mask
+
+        # text encode
+        h, h_lengths = self.encoder(token, token_len)
+        h = self.encoder_proj(h)
+        mel_len1, mel_len2 = prompt_feat.shape[1], int(token_len2 / 50 * 22050 / 256)
+        h, h_lengths = self.length_regulator.inference(h[:, :token_len1], h[:, token_len1:], mel_len1, mel_len2)
+
+        return h, mask, embedding
+
     
+    '''
     def forward(self,
                 token,
                 token_len,
@@ -60,7 +91,7 @@ class MaskedDiffWithXvecStage1(torch.nn.Module):
         mask = (~make_pad_mask(torch.tensor([mel_len1 + mel_len2]))).to(h)
 
         return h, mask, embedding, conds
-
+        '''
     
     
 

@@ -128,6 +128,7 @@ class CosyVoiceModel:
     
     def token2wav_without_stream(self, token, prompt_token, prompt_feat, embedding, uuid, finalize=False):
         with self.flow_hift_context:
+            #print(f"token: {token}")
             tts_mel = self.flow.inference_without_stream(token=token.to(self.device),
                                         token_len=torch.tensor([token.shape[0]], dtype=torch.int32).to(self.device),
                                         prompt_token=prompt_token.to(self.device),
@@ -235,6 +236,7 @@ class CosyVoiceModel:
 
         # Process all tokens at once (non-stream mode)
         # 确保 tts_speech_token_dict[this_uuid] 是一个包含张量的列表
+        #print(f"self.tts_speech_token_dict[this_uuid]: {self.tts_speech_token_dict[this_uuid]}")
         if len(self.tts_speech_token_dict[this_uuid]) > 0:
             this_tts_speech_token = torch.cat(self.tts_speech_token_dict[this_uuid], dim=0)
         else:

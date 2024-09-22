@@ -71,19 +71,18 @@ class TransformerLMStage1(torch.nn.Module):
             prompt_text: torch.Tensor,
             prompt_text_len: torch.Tensor,
             prompt_speech_token: torch.Tensor,
-            prompt_speech_token_len: torch.Tensor,
             embedding: torch.Tensor
     ) -> torch.Tensor:  
         device = text.device
         text = torch.concat([prompt_text, text], dim=1)
-        text_len += prompt_text_len
+        text_len = text_len + prompt_text_len
         text = self.text_embedding(text)
 
         # 1. encode text
         text, text_len = self.encode(text, text_len)
 
         # 2. encode embedding
-        if embedding.shape[0] != 0:
+        if torch.sum(embedding.shape[0] != 0) > 0:
             embedding = F.normalize(embedding, dim=1)
             embedding = self.spk_embed_affine_layer(embedding)
             embedding = embedding.unsqueeze(dim=1)
@@ -93,13 +92,19 @@ class TransformerLMStage1(torch.nn.Module):
         # 3. concat llm_input
         sos_eos_emb = self.llm_embedding.weight[self.sos_eos].reshape(1, 1, -1)
         task_id_emb = self.llm_embedding.weight[self.task_id].reshape(1, 1, -1)
-        if prompt_speech_token_len != 0:
-            prompt_speech_token_emb = self.speech_embedding(prompt_speech_token)
-        else:
-            prompt_speech_token_emb = torch.zeros(1, 0, self.llm_input_size, dtype=text.dtype).to(device)
+        
+        # 如果是SFT，也要走一次speech_embedding计算，只不过prompt_speech_token是一个全0张量
+        prompt_speech_token_emb = self.speech_embedding(prompt_speech_token)
+        
+        #if prompt_speech_token_len != 0:
+        #    prompt_speech_token_emb = self.speech_embedding(prompt_speech_token)
+        #else:
+        #    prompt_speech_token_emb = torch.zeros(1, 0, self.llm_input_size, dtype=text.dtype).to(device)
         lm_input = torch.concat([sos_eos_emb, embedding, text, task_id_emb, prompt_speech_token_emb], dim=1)
+        
+        speech_embedding_weight = self.speech_embedding.weight
 
-        return lm_input, text_len
+        return lm_input, text_len, speech_embedding_weight
 
 
 
