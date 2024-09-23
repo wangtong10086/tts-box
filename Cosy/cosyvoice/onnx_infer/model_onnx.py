@@ -366,7 +366,8 @@ class CosyVoiceModel:
             cond=conds,
             n_timesteps=10
     '''
-    def ODE_Solver(self, h, mask, n_timesteps=10, temperature=1.0, inference_cfg_rate=0.7, embedding=None, conds=None):
+    def ODE_Solver(self, mu, mask, n_timesteps=10, temperature=1.0, inference_cfg_rate=0.7, embedding=None, conds=None):
+
         z = torch.randn_like(mu) * temperature
         t_span = torch.linspace(0, 1, n_timesteps + 1, device=mu.device, dtype=mu.dtype)
         t_span = 1 - torch.cos(t_span * 0.5 * torch.pi)
@@ -375,16 +376,19 @@ class CosyVoiceModel:
         t = t.unsqueeze(dim=0)
         x = z.clone()
         
-        mu=h.transpose(1, 2).contiguous()
-        
+        print(f"conds: {conds.shape}")
+        print(f"x: {x.shape}")
+        print(f"mu: {mu.shape}")
+        print(f"embedding: {embedding.shape}")
         inputs = {
             'x': x.numpy(),
             'mask': mask.numpy(),
             'mu': mu.numpy(),     
             't': t.numpy(),
-            'spks': embedding.numpy(),
+            'spks': embedding,
             'cond': conds.numpy()
         }
+        
         input_names = [input.name for input in self.flow_stage2_session.get_inputs()]
         for step in range(1, len(t_span)):
             dphi_dt = self.flow_stage2_session.run(None, {
@@ -419,16 +423,21 @@ class CosyVoiceModel:
         mel_len1 = prompt_feat.shape[1]
         token_len = np.array([token.shape[0]], dtype=np.int32)
         mel_len2 = int(token.shape[0] / 50 * 22050 / 256)
+        prompt_token_len = np.array([prompt_token.shape[1]], dtype=np.int32)
+        
+        sum_token_len = token_len + prompt_token_len
+        # print(f"sum_token_len: {sum_token_len}")  sum_token_len: [745]
         # 注意pytorch
-        mask = (~make_pad_mask(token_len)).float().unsqueeze(-1).to(embedding)
+        mask = (~make_pad_mask(torch.from_numpy(sum_token_len))).float().unsqueeze(-1)
 
         inputs = {
             'token': token,            
             'token_len': token_len,     
             'prompt_token': prompt_token.cpu().numpy(),  
-            'prompt_token_len': np.array([prompt_token.shape[1]], dtype=np.int32), 
+            'prompt_token_len': prompt_token_len, 
             'prompt_feat': prompt_feat.cpu().numpy(),
-            'embedding': embedding.cpu().numpy()
+            'embedding': embedding.cpu().numpy(),
+            'mask': mask.cpu().numpy()
         }
 
         #print_variable_info(token=token, prompt_token=prompt_token, prompt_feat=prompt_feat, embedding=embedding)
@@ -437,24 +446,29 @@ class CosyVoiceModel:
 
         # 获取输入名称并运行模型
         input_names = [input.name for input in self.flow_stage1_session.get_inputs()]
-        h, mask, embedding, conds = self.flow_stage1_session.run(None, {
+        h, embedding = self.flow_stage1_session.run(None, {
             input_names[0]: inputs["token"],
             input_names[1]: inputs["token_len"],
             input_names[2]: inputs["prompt_token"],
             input_names[3]: inputs["prompt_token_len"],
             input_names[4]: inputs["prompt_feat"],
-            input_names[5]: inputs["embedding"]
+            input_names[5]: inputs["embedding"],
+            input_names[6]: inputs["mask"],
         })
         
+        #print(f"mel_len1: {mel_len1}")  mel_len1: 299 
+        #print(f"mel_len1: {mel_len2}")  mel_len1: 983
         # 注意pytorch
-        conds = torch.zeros([1, mel_len1 + mel_len2, self.flow_output_size], device=token.device)
+        conds = torch.zeros([1, mel_len1 + mel_len2, self.flow_output_size])
         conds[:, :mel_len1] = prompt_feat
         conds = conds.transpose(1, 2)
-        mask = (~make_pad_mask(torch.tensor([mel_len1 + mel_len2]))).to(h)
-        
-        feat = self.ODE_Solver(h, mask, n_timesteps=10, temperature=1.0, inference_cfg_rate=0.7, embedding=embedding, conds=conds)
+        mask = (~make_pad_mask(torch.tensor([mel_len1 + mel_len2]))).float()
+        mask=mask.unsqueeze(1)
+        print(f"h: {h.shape}")
+        mu=torch.from_numpy(h).transpose(1, 2).contiguous()
+        feat = self.ODE_Solver(mu, mask, n_timesteps=10, temperature=1.0, inference_cfg_rate=0.7, embedding=embedding, conds=conds)
         tts_mel = feat[:, :, mel_len1:]
-        
+        assert tts_mel.shape[2] == mel_len2
         # Mel 重叠淡入淡出处理
         if self.mel_overlap_dict[uuid] is not None:
             tts_mel = fade_in_out(tts_mel, self.mel_overlap_dict[uuid], self.mel_window)

@@ -26,11 +26,11 @@ for i, j in enumerate(cosyvoice.inference_zero_shot('收到好友从远方寄来
 
 
 # 初始化模型
-cosyvoice = CosyVoice('pretrained_models/CosyVoice-300M')
-func = cosyvoice.inference_zero_shot_without_stream
+#cosyvoice = CosyVoice('pretrained_models/CosyVoice-300M')
+#func = cosyvoice.inference_zero_shot_without_stream
 
-#cosyvoice = CosyVoiceONNX('model_convert/onnx')
-#func = cosyvoice.inference
+cosyvoice = CosyVoiceONNX('model_convert/onnx')
+func = cosyvoice.inference
 
 
 # 加载 zero-shot 提示语音

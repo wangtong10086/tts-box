@@ -223,17 +223,24 @@ class MaskedDiffWithXvec(torch.nn.Module):
         token_len1, token_len2 = prompt_token.shape[1], token.shape[1]
         token, token_len = torch.concat([prompt_token, token], dim=1), prompt_token_len + token_len
         mask = (~make_pad_mask(token_len)).float().unsqueeze(-1).to(embedding)
-        print(f"mask: {mask.shape}")
-        print(f"mask: {mask.dtype}")
+        #print(f"token_len: {token_len}")
+        #print(f"mask: {mask.shape}")
+        #print(f"mask: {mask.dtype}")
         
         
         token = self.input_embedding(torch.clamp(token, min=0)) * mask
 
         # text encode
         h, h_lengths = self.encoder(token, token_len)
+        #print(f"h: {h.shape}")  h: torch.Size([1, 715, 512])
         h = self.encoder_proj(h)
+        #print(f"h: {h.shape}")  h: torch.Size([1, 715, 80])
         mel_len1, mel_len2 = prompt_feat.shape[1], int(token_len2 / 50 * 22050 / 256)
         h, h_lengths = self.length_regulator.inference(h[:, :token_len1], h[:, token_len1:], mel_len1, mel_len2)
+        #print(f"h: {h.shape}")  h: torch.Size([1, 1230, 80])
+        
+        #print(f"mel_len1: {mel_len1}") mel_len1: 299
+        #print(f"mel_len1: {mel_len2}") mel_len1: 931
 
         # get conditions
         conds = torch.zeros([1, mel_len1 + mel_len2, self.output_size], device=token.device)

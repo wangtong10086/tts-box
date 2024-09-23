@@ -316,19 +316,26 @@ class ConditionalDecoder(nn.Module):
         t = self.time_mlp(t)
 
         #x = pack([x, mu], "b * t")[0]
+        # print(f"x : {x.shape}")  x : torch.Size([1, 80, 1230])
         x = torch.cat((x, mu), dim=1) 
+        # print(f"x : {x.shape}") x : torch.Size([1, 160, 1230])
 
         if spks is not None:
             #spks = repeat(spks, "b c -> b c t", t=x.shape[-1])
             #x = pack([x, spks], "b * t")[0]
             
+            # print(f"spks : {spks.shape}") spks : torch.Size([1, 80]
             # 使用 repeat 操作将 spks 扩展到 (b, c, t)，即在最后一维增加重复 t 次
             spks = spks.unsqueeze(-1).repeat(1, 1, x.shape[-1])  # 形状 (b, c, t)
+            # print(f"spks : {spks.shape}") spks : torch.Size([1, 80, 1230])
             # 使用 cat 操作将 x 和 spks 在最后一维（时间维度 t）上拼接
             x = torch.cat((x, spks), dim=1)  # 形状为 (b, 2 * c, t)
+            # print(f"x : {x.shape}") x : torch.Size([1, 240, 1230])
         if cond is not None:
+            # print(f"cond : {cond.shape}")  cond : torch.Size([1, 80, 1230])
             #x = pack([x, cond], "b * t")[0]
             x = torch.cat((x, cond), dim=1)  # 拼接后形状为 (b, c + num_channels_cond, t)
+            # print(f"x : {x.shape}")  x : torch.Size([1, 320, 1230])
 
         hiddens = []
         masks = [mask]
