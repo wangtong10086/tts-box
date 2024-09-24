@@ -14,6 +14,8 @@ from cosyvoice.utils.common import ras_sampling_onnx
 from scipy.signal import get_window
 from cosyvoice.utils.mask import make_pad_mask
 
+from model_convert.models import LLMModelStage1, LLMModelStage2, FlowModelStage1, FlowModelStage2, HifiModel
+
 class ConvRNNF0Predictor(nn.Module):
     def __init__(self,
                  num_class: int = 1,
@@ -439,6 +441,17 @@ class CosyVoiceModel:
             'embedding': embedding.cpu().numpy(),
             'mask': mask.cpu().numpy()
         }
+        
+        '''  for DEBUG
+        model_dir = "E:\\Codes\\CosyVoice\\pretrained_models\\CosyVoice-300M"
+        flow_model_stage1 = FlowModelStage1(model_dir=model_dir, device='cuda', verbose=True, max_batch_size=16, fp16=False)
+        flow_model_s1 = flow_model_stage1.get_model()
+        h, embedding, t_l = flow_model_s1(torch.from_numpy(token).cuda(), torch.from_numpy(token_len).cuda(), prompt_token.cuda(), 
+                                     torch.from_numpy(prompt_token_len).cuda(), prompt_feat.cuda(), embedding.cuda(), mask.cuda())
+        print(f"h: {h.shape}")
+        print(f"embedding: {embedding.shape}")
+        print(f"t_l: {t_l}")
+        '''
 
         #print_variable_info(token=token, prompt_token=prompt_token, prompt_feat=prompt_feat, embedding=embedding)
         #print(f"token: {token.shape[0]}")
@@ -446,6 +459,7 @@ class CosyVoiceModel:
 
         # 获取输入名称并运行模型
         input_names = [input.name for input in self.flow_stage1_session.get_inputs()]
+        print("input_names: {input_names}")
         h, embedding = self.flow_stage1_session.run(None, {
             input_names[0]: inputs["token"],
             input_names[1]: inputs["token_len"],
@@ -457,14 +471,16 @@ class CosyVoiceModel:
         })
         
         #print(f"mel_len1: {mel_len1}")  mel_len1: 299 
-        #print(f"mel_len1: {mel_len2}")  mel_len1: 983
+        print(f"mel_len2: {mel_len2}") 
         # 注意pytorch
         conds = torch.zeros([1, mel_len1 + mel_len2, self.flow_output_size])
         conds[:, :mel_len1] = prompt_feat
         conds = conds.transpose(1, 2)
         mask = (~make_pad_mask(torch.tensor([mel_len1 + mel_len2]))).float()
         mask=mask.unsqueeze(1)
+        print(f"prompt_token_len: {prompt_token_len}")
         print(f"h: {h.shape}")
+        #print(f"t_l: {t_l}")
         mu=torch.from_numpy(h).transpose(1, 2).contiguous()
         feat = self.ODE_Solver(mu, mask, n_timesteps=10, temperature=1.0, inference_cfg_rate=0.7, embedding=embedding, conds=conds)
         tts_mel = feat[:, :, mel_len1:]

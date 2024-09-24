@@ -32,24 +32,33 @@ class MaskedDiffWithXvecStage1(torch.nn.Module):
                 embedding_input,
                 mask):
         
+        # shape [1, LT1]
         token = token.unsqueeze(0)
         # xvec projection
+        # [1, 192]
         embedding_output = F.normalize(embedding_input, dim=1)
         embedding_output = self.spk_embed_affine_layer(embedding_output)
 
         # concat text and prompt_text
+        # LT1 LT2
         token_len1, token_len2 = prompt_token.shape[1], token.shape[1]
+        # [1, lt1+lt2]  lt1+lt2
         token, token_len = torch.concat([prompt_token, token], dim=1), prompt_token_len + token_len
         
-        
+        # [lt1+lt2, 512]
         token = self.input_embedding(torch.clamp(token, min=0)) * mask
 
         # text encode
         h, h_lengths = self.encoder(token, token_len)
         h = self.encoder_proj(h)
-        mel_len1, mel_len2 = prompt_feat.shape[1], int(token_len2 / 50 * 22050 / 256)
+        mel_len1 = prompt_feat.shape[1]
+        mel_len2 = torch.floor(torch.tensor(token_len2 / 50 * 22050 / 256)).to(torch.int64)
         h, h_lengths = self.length_regulator.inference(h[:, :token_len1], h[:, token_len1:], mel_len1, mel_len2)
 
+        # token_len1 equal; mel_len1 equal.473; mel_len2 not equal  1157 != 537  983 363
+        
+        # prompt_token_len+token_len2 = 745  prompt_token_len: [174] token_len2=745-174=571
+        #t_l = prompt_token_len+mel_len2
         return h, embedding_output
 
     

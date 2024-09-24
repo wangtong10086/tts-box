@@ -67,5 +67,5 @@ if __name__ == '__main__':
     #llm_model_convert1(model_path)
     #llm_model_convert2(model_path)
     flow_model_stage1_convert(model_path)
-    #flow_model_stage2_convert(model_path)
+    flow_model_stage2_convert(model_path)
     #hift_model_convert(model_path)
