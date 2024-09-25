@@ -135,6 +135,7 @@ class CosyVoiceModel:
                                         prompt_token_len=torch.tensor([prompt_token.shape[1]], dtype=torch.int32).to(self.device),
                                         prompt_feat=prompt_feat.to(self.device),
                                         embedding=embedding.to(self.device))
+            print(f"tts_mel: {tts_mel}")
             # mel overlap fade in out
             if self.mel_overlap_dict[uuid] is not None:
                 tts_mel = fade_in_out(tts_mel, self.mel_overlap_dict[uuid], self.mel_window)

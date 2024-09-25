@@ -280,9 +280,12 @@ class TransformerLM(torch.nn.Module):
         #print(f"cnn_cache: {cnn_cache.shape}")
         
         for i in range(max_len):
+            #print(f"lm_input: {lm_input}")
+            #print(f"att_cache: {att_cache}")
             y_pred, att_cache, cnn_cache = self.llm.forward_chunk(lm_input, offset=0, required_cache_size=-1, att_cache=att_cache, cnn_cache=cnn_cache,
                                                                   att_mask=torch.tril(torch.ones((1, lm_input.shape[1], lm_input.shape[1]), device=lm_input.device)).to(torch.bool))
             logp = self.llm_decoder(y_pred[:, -1]).log_softmax(dim=-1)
+            #print(f"att_cache: {att_cache.shape}")
             #print(f"logp: {logp}")
             top_ids = self.sampling_ids(logp.squeeze(dim=0), out_tokens, sampling, ignore_eos=True if i < min_len else False).item()
             #print(f"top_ids: {top_ids}")

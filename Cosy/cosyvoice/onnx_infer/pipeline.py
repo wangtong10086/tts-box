@@ -23,8 +23,8 @@ class CosyVoiceONNX:
         self.llm_stage2_model_path = '{}/llm_model_stage2.onnx'.format(model_dir)
         self.flow_stage1_model_path = '{}/flow_model_stage1.onnx'.format(model_dir)
         self.flow_stage2_model_path = '{}/flow_model_stage2.onnx'.format(model_dir)
-        self.hift_model_path = '{}/hift_model.onnx'.format(model_dir)
-        self.model = CosyVoiceModel(self.llm_stage1_model_path, self.llm_stage2_model_path, self.flow_stage1_model_path, self.flow_stage2_model_path, self.hift_model_path)
+        self.hift_model_diir = '{}'.format(model_dir)
+        self.model = CosyVoiceModel(self.llm_stage1_model_path, self.llm_stage2_model_path, self.flow_stage1_model_path, self.flow_stage2_model_path, self.hift_model_diir)
 
     # The rest of the class methods remain unchanged except for the inference methods
     # Here is an example of how to modify the inference method to use ONNX models
