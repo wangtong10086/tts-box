@@ -118,8 +118,6 @@ def ras_sampling_onnx(weighted_scores, decoded_tokens, sampling, top_p=0.8, top_
 
 
 
-
-
 # Repetition Aware Sampling in VALL-E 2
 def ras_sampling(weighted_scores, decoded_tokens, sampling, top_p=0.8, top_k=25, win_size=10, tau_r=0.1):
     top_ids = nucleus_sampling(weighted_scores, top_p=top_p, top_k=top_k)

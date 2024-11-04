@@ -15,6 +15,7 @@ from scipy.signal import get_window
 from cosyvoice.utils.mask import make_pad_mask
 from hyperpyyaml import load_hyperpyyaml
 from model_convert.models import LLMModelStage1, LLMModelStage2, FlowModelStage1, FlowModelStage2, HifiModel
+import random
 
 
 class CosyVoiceModel:
@@ -65,6 +66,7 @@ class CosyVoiceModel:
         self.speech_token_size = 4096
         self.llm_input_size = 1024
         self.sampling = ras_sampling_onnx
+        
         
         
     def sampling_ids(
@@ -175,7 +177,8 @@ class CosyVoiceModel:
             n_timesteps=10
     '''
     def ODE_Solver(self, mu, mask, n_timesteps=10, temperature=1.0, inference_cfg_rate=0.7, embedding=None, conds=None):
-
+        
+        #print(f"temperature: {temperature}")
         z = torch.randn_like(mu) * temperature
         t_span = torch.linspace(0, 1, n_timesteps + 1, device=mu.device, dtype=mu.dtype)
         t_span = 1 - torch.cos(t_span * 0.5 * torch.pi)
@@ -184,10 +187,10 @@ class CosyVoiceModel:
         t = t.unsqueeze(dim=0)
         x = z.clone()
         
-        print(f"conds: {conds.shape}")
-        print(f"x: {x.shape}")
-        print(f"mu: {mu.shape}")
-        print(f"embedding: {embedding.shape}")
+        #print(f"conds: {conds.shape}")
+        print(f"x: {x}")
+        #print(f"mu: {mu.shape}")
+        #print(f"embedding: {embedding.shape}")
         inputs = {
             'x': x.numpy(),
             'mask': mask.numpy(),
@@ -196,7 +199,12 @@ class CosyVoiceModel:
             'spks': embedding,
             'cond': conds.numpy()
         }
-        
+        #print(f"z: {z}")
+        #print(f"mask: {mask}")
+        #print(f"mu: {mu}")
+        #print(f"t: {t}")
+        #print(f"spks: {embedding}")
+        #print(f"conds: {conds}")
         input_names = [input.name for input in self.flow_stage2_session.get_inputs()]
         for step in range(1, len(t_span)):
             dphi_dt = self.flow_stage2_session.run(None, {
@@ -228,6 +236,47 @@ class CosyVoiceModel:
     
     def token2wav(self, token, prompt_token, prompt_feat, embedding, uuid, finalize=False):
 
+        #print(f"token: {token}")
+        data = [667, 692, 658, 658, 658, 658, 632, 373, 685, 669, 700, 3965, 699, 383,
+        427, 190, 223, 2437, 72, 596, 556, 603, 15, 3823, 620, 553, 553, 553,
+        2828, 1006, 2828, 59, 223, 206, 179, 1307, 1307, 179, 1938, 260, 223, 1006,
+        1006, 590, 2185, 471, 570, 28, 433, 75, 237, 237, 53, 707, 98, 418,
+        714, 316, 126, 59, 414, 420, 393, 353, 207, 281, 676, 57, 115, 302,
+        2386, 84, 533, 10, 3836, 570, 223, 1460, 946, 1104, 171, 420, 87, 626,
+        412, 4, 318, 104, 1923, 340, 250, 374, 115, 115, 218, 1923, 187, 100,
+        676, 514, 308, 383, 515, 726, 351, 11, 3946, 171, 304, 173, 476, 47,
+        281, 308, 540, 35, 67, 1531, 2723, 2723, 2723, 56, 498, 277, 21, 415,
+        563, 1381, 325, 325, 118, 51, 384, 83, 669, 669, 3190, 3190, 667, 667,
+        667, 667, 667, 667, 667, 667, 667, 685, 659, 230, 216, 216, 447, 216,
+        216, 216, 216, 216, 75, 345, 707, 192, 232, 38, 4030, 713, 1235, 261,
+        526, 337, 98, 570, 453, 332, 25, 388, 348, 1104, 536, 33, 551, 422,
+        498, 359, 728, 177, 3290, 7, 479, 187, 594, 273, 2031, 1531, 2280, 694,
+        648, 160, 388, 41, 87, 406, 197, 597, 719, 4, 3889, 386, 718, 199,
+        199, 199, 157, 475, 407, 28, 566, 230, 442, 216, 140, 230, 204, 85,
+        3132, 468, 2723, 445, 56, 166, 212, 3766, 3965, 699, 363, 205, 574, 219,
+        540, 393, 466, 515, 515, 308, 281, 240, 470, 44, 603, 645, 286, 596,
+        726, 212, 103, 74, 325, 1381, 415, 126, 155, 10, 356, 576, 120, 21,
+        265, 265, 92, 163, 554, 207, 1035, 436, 249, 331, 3190, 3190, 667, 667,
+        3190, 658, 463, 531, 230, 230, 216, 216, 216, 210, 140, 204, 450, 95,
+        514, 152, 3823, 568, 349, 523, 633, 314, 209, 254, 597, 4, 4, 648,
+        2723, 157, 469, 1401, 460, 87, 591, 3766, 466, 94, 2437, 118, 579, 1596,
+        406, 406, 3406, 536, 117, 144, 505, 75, 230, 216, 210, 140, 334, 3254,
+        23, 1852, 3889, 318, 308, 3290, 62, 13, 1104, 434, 202, 3480, 188, 2057,
+        358, 168, 448, 448, 484, 271, 332, 254, 166, 495, 33, 536, 607, 1354,
+        47, 1930, 112, 285, 2579, 574, 187, 309, 100, 1938, 228, 338, 3823, 261,
+        2644, 2644, 712, 434, 398, 331, 331, 3190, 619, 221, 667, 667, 667, 667,
+        667, 667, 667, 667, 3190, 505, 2444, 71, 75, 216, 216, 237, 237, 216,
+        216, 216, 216, 216, 216, 216, 75, 2444, 121, 3821, 602, 274, 3575, 3575,
+        553, 217, 275, 507, 507, 2752, 407, 250, 527, 206, 114, 892, 441, 260,
+        223, 547, 82, 4013, 4013, 433, 652, 631, 2444, 75, 53, 345, 85, 455,
+        4, 4, 3889, 315, 318, 179, 275, 385, 97, 258, 892, 416, 79, 1228,
+        110, 101, 424, 150, 423, 207, 165, 241, 371, 52, 362, 277, 92, 48,
+        554, 2691, 2691, 662, 672, 529, 170, 202, 385, 612, 482, 42, 132, 257,
+        15, 134, 16, 16, 16, 516, 135, 1214, 493, 270, 598, 696, 3190, 3190,
+        692, 667, 667, 667, 667, 667, 667, 3190, 3821, 1091, 187, 742, 1, 2031,
+        39, 2723, 468, 2514, 690, 52, 155, 10, 10, 623, 711, 2645]
+        token = np.array(data, dtype=np.int64)
+        #print(f"token: {token}")
         mel_len1 = prompt_feat.shape[1]
         token_len = np.array([token.shape[0]], dtype=np.int32)
         mel_len2 = int(token.shape[0] / 50 * 22050 / 256)
@@ -275,6 +324,7 @@ class CosyVoiceModel:
             input_names[5]: inputs["embedding"],
             input_names[6]: inputs["mask"],
         })
+        #print(f"h: {h}")
         
         #print(f"mel_len1: {mel_len1}")  mel_len1: 299 
         print(f"mel_len2: {mel_len2}") 
@@ -291,7 +341,7 @@ class CosyVoiceModel:
         tts_mel = feat[:, :, mel_len1:].to(self.device)
         assert tts_mel.shape[2] == mel_len2
         
-        print(f"tts_mel: {tts_mel}")
+        #print(f"tts_mel: {tts_mel}")
         
         if self.mel_overlap_dict[uuid] is not None:
             tts_mel = fade_in_out(tts_mel, self.mel_overlap_dict[uuid], self.mel_window)

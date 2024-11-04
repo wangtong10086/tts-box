@@ -254,7 +254,7 @@ class MaskedDiffWithXvec(torch.nn.Module):
         #        mask=mask,
         #        embedding=embedding,
         #        conds=conds)
-        
+        #print(f"h: {h}")
         feat = self.decoder(
             mu=h.transpose(1, 2).contiguous(),
             mask=mask.unsqueeze(1),

@@ -281,7 +281,7 @@ class TransformerLM(torch.nn.Module):
         
         for i in range(max_len):
             #print(f"lm_input: {lm_input}")
-            #print(f"att_cache: {att_cache}")
+            #print(f"att_cache: {att_cache.shape}")
             y_pred, att_cache, cnn_cache = self.llm.forward_chunk(lm_input, offset=0, required_cache_size=-1, att_cache=att_cache, cnn_cache=cnn_cache,
                                                                   att_mask=torch.tril(torch.ones((1, lm_input.shape[1], lm_input.shape[1]), device=lm_input.device)).to(torch.bool))
             logp = self.llm_decoder(y_pred[:, -1]).log_softmax(dim=-1)

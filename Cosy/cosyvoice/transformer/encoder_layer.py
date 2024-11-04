@@ -202,6 +202,7 @@ class ConformerEncoderLayer(nn.Module):
         residual = x
         if self.normalize_before:
             x = self.norm_mha(x)
+        #print(f"att_cache: {att_cache.shape}")
         x_att, new_att_cache = self.self_attn(x, x, x, mask, pos_emb,
                                               att_cache)
         x = residual + self.dropout(x_att)

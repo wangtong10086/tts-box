@@ -13,7 +13,8 @@
 # limitations under the License.
 import torch
 import torch.nn.functional as F
-
+import numpy as np
+import random
 
 class BASECFM(torch.nn.Module):
     def __init__(
@@ -49,7 +50,7 @@ class BASECFM(torch.nn.Module):
         Returns:
             sample: generated mel-spectrogram
                 shape: (batch_size, n_feats, mel_timesteps)
-        """
+        """ 
         z = torch.randn_like(mu) * temperature
         t_span = torch.linspace(0, 1, n_timesteps + 1, device=mu.device)
         return self.solve_euler(z, t_span=t_span, mu=mu, mask=mask, spks=spks, cond=cond)
@@ -138,6 +139,11 @@ class ConditionalCFM(BASECFM):
         
         
     def forward(self, mu, mask, n_timesteps, temperature=1.0, spks=None, cond=None):
+        #print(f"temperature: {temperature}")
+        #print(f"mu: {mu}")
+        #print(f"mu: {mu.shape}")
+        #print(f"mu: {mu.dtype}")
+        #print(f"mu: {mu.device}")
         z = torch.randn_like(mu) * temperature
         t_span = torch.linspace(0, 1, n_timesteps + 1, device=mu.device, dtype=mu.dtype)
         if self.t_scheduler == 'cosine':
@@ -147,6 +153,13 @@ class ConditionalCFM(BASECFM):
         t = t.unsqueeze(dim=0)
         x = z.clone()
 
+        #print(f"z: {z}")
+        #print(f"x: {x}")
+        #print(f"mask: {mask}")
+        #print(f"mu: {mu}")
+        #print(f"t: {t}")
+        #print(f"spks: {spks}")
+        #print(f"cond: {cond}")
         for step in range(1, len(t_span)):
             dphi_dt = self.estimator.forward(x, mask, mu, t, spks, cond)
             if self.inference_cfg_rate > 0:

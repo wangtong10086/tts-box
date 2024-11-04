@@ -2,11 +2,14 @@ import time
 from hyperpyyaml import load_hyperpyyaml
 from cosyvoice.cli.frontend import CosyVoiceFrontEnd
 from cosyvoice.utils.file_utils import logging
-from cosyvoice.onnx_infer.model_onnx import CosyVoiceModel
+from cosyvoice.onnx_infer.llm_onnx_model import CosyVoiceModel
+import random, torch
+import numpy as np
 
 class CosyVoiceONNX:
 
     def __init__(self, model_dir):
+        
         instruct = True if '-Instruct' in model_dir else False
         self.model_dir = model_dir
         with open('{}/cosyvoice_onnx.yaml'.format(model_dir), 'r') as f:
@@ -18,13 +21,11 @@ class CosyVoiceONNX:
                                           '{}/spk2info.pt'.format(model_dir),
                                           instruct, 
                                           configs['allowed_special'])
-        # Load ONNX models using ONNX Runtime
         self.llm_stage1_model_path = '{}/llm_model_stage1.onnx'.format(model_dir)
         self.llm_stage2_model_path = '{}/llm_model_stage2.onnx'.format(model_dir)
-        self.flow_stage1_model_path = '{}/flow_model_stage1.onnx'.format(model_dir)
-        self.flow_stage2_model_path = '{}/flow_model_stage2.onnx'.format(model_dir)
-        self.hift_model_diir = '{}'.format(model_dir)
-        self.model = CosyVoiceModel(self.llm_stage1_model_path, self.llm_stage2_model_path, self.flow_stage1_model_path, self.flow_stage2_model_path, self.hift_model_diir)
+        self.model = CosyVoiceModel(self.llm_stage1_model_path, self.llm_stage2_model_path, configs['flow'], configs['hift'])
+        self.model.load('{}/flow.pt'.format(model_dir),
+                        '{}/hift.pt'.format(model_dir))
 
     # The rest of the class methods remain unchanged except for the inference methods
     # Here is an example of how to modify the inference method to use ONNX models
@@ -41,7 +42,7 @@ class CosyVoiceONNX:
             logging.info('synthesis text {}'.format(i))
 
             # Run inference in non-stream mode, accumulate all model outputs
-            model_outputs = self.model.inference(**model_input)
+            model_outputs = self.model.inference_without_stream(**model_input)
 
             print(f"model_outputs: {model_outputs}")
             speech_len = model_outputs['tts_speech'].shape[1] / 22050

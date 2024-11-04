@@ -1,0 +1,10 @@
+```
+mkdir build
+cd build
+cmake ..
+cmake --build . --config Release
+.\Release\test_torch.exe
+
+Remove-Item -Path * -Recurse -Force
+
+```

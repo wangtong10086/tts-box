@@ -25,6 +25,8 @@ for i, j in enumerate(cosyvoice.inference_zero_shot('收到好友从远方寄来
 '''
 
 
+
+
 # 初始化模型
 cosyvoice = CosyVoice('pretrained_models/CosyVoice-300M')
 func = cosyvoice.inference_zero_shot_without_stream
@@ -32,7 +34,7 @@ func = cosyvoice.inference_zero_shot_without_stream
 #cosyvoice = CosyVoiceONNX('model_convert/onnx')
 #func = cosyvoice.inference
 
-
+'''
 # 加载 zero-shot 提示语音
 prompt_speech_16k = load_wav('zero_shot_prompt.wav', 16000)
 # 使用非流模式执行推理
@@ -50,7 +52,7 @@ model_outputs = func(
     '往生堂定时大酬宾，购一送一，购二送三，多购多得。',
     prompt_speech_16k
 )
-'''
+
 # 保存生成的语音
 for i, model_output in enumerate(model_outputs):
     torchaudio.save('zero_shot_{}.wav'.format(i), model_output['tts_speech'], 22050)

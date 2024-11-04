@@ -107,6 +107,7 @@ class MultiHeadedAttention(nn.Module):
         #   1. onnx(16/4) [WHY? Because we feed real cache & real mask for the
         #           1st chunk to ease the onnx export.]
         #   2. pytorch training
+        # print(mask)
         if mask.size(2) > 0:  # time2 > 0
             mask = mask.unsqueeze(1).eq(0)  # (batch, 1, *, time2)
             # For last chunk, time2 might be larger than scores.size(-1)
@@ -120,6 +121,7 @@ class MultiHeadedAttention(nn.Module):
         else:
             attn = torch.softmax(scores, dim=-1)  # (batch, head, time1, time2)
 
+        #print(f"self.dropout: {self.dropout.p}")
         p_attn = self.dropout(attn)
         x = torch.matmul(p_attn, value)  # (batch, head, time1, d_k)
         x = (x.transpose(1, 2).contiguous().view(n_batch, -1,
@@ -275,9 +277,19 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
                 where `cache_t == chunk_size * num_decoding_left_chunks`
                 and `head * d_k == size`
         """
+        #print(f"query: {query.shape}") #([1, 1, 1024])
+        #print(f"key: {key.shape}") #([1, 1, 1024])
+        #print(f"value: {value.shape}") #([1, 1, 1024])
+        #print(f"mask: {mask.shape}") #([1, 1, 1])
+        #print(f"pos_emb: {pos_emb.shape}") #([1, 709, 1024])
+        #print(f"cache: {cache.shape}") #torch.Size([1, 16, 355, 128])
+        
         q, k, v = self.forward_qkv(query, key, value)
         q = q.transpose(1, 2)  # (batch, time1, head, d_k)
 
+        #print(f"q.shape: {q.shape}")
+        #print(f"added k.shape: {k.shape}")
+        #print(f"added v.shape: {v.shape}")
         # NOTE(xcsong):
         #   when export onnx model, for 1st chunk, we feed
         #       cache(1, head, 0, d_k * 2) (16/-1, -1/-1, 16/0 mode)
@@ -300,6 +312,8 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
                                                  dim=-1)
             k = torch.cat([key_cache, k], dim=2)
             v = torch.cat([value_cache, v], dim=2)
+            #print(f"kcache.shape: {k.shape}")
+            #print(f"vcache.shape: {v.shape}")
         # NOTE(xcsong): We do cache slicing in encoder.forward_chunk, since it's
         #   non-trivial to calculate `next_cache_start` here.
         new_cache = torch.cat((k, v), dim=-1)
@@ -317,15 +331,24 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         # first compute matrix a and matrix c
         # as described in https://arxiv.org/abs/1901.02860 Section 3.3
         # (batch, head, time1, time2)
+        # print(q_with_bias_u.shape, q_with_bias_v.shape, k.shape, p.shape) # torch.Size([1, 16, 355, 64]) torch.Size([1, 16, 355, 64]) torch.Size([1, 16, 355, 64]) torch.Size([1, 16, 709, 64])
         matrix_ac = torch.matmul(q_with_bias_u, k.transpose(-2, -1))
 
         # compute matrix b and matrix d
         # (batch, head, time1, time2)
+       
+        #print(q_with_bias_u.shape)  # same shape with q
+        #print(q_with_bias_v.shape)  # same shape with q
+        #print(p.transpose(-2, -1).shape)
         matrix_bd = torch.matmul(q_with_bias_v, p.transpose(-2, -1))
         # NOTE(Xiang Lyu): Keep rel_shift since espnet rel_pos_emb is used
-        if matrix_ac.shape != matrix_bd.shape:
+        # print(matrix_ac.shape, matrix_bd.shape) # torch.Size([1, 16, 355, 355]) torch.Size([1, 16, 355, 709])
+        print("matrix_ac: ", matrix_ac.shape)
+        print("matrix_bd: ", matrix_bd.shape)
+        if matrix_ac.shape != matrix_bd.shape:  
             matrix_bd = self.rel_shift(matrix_bd)
 
+        # print(matrix_ac.shape, matrix_bd.shape) # torch.Size([1, 16, 355, 355]) torch.Size([1, 16, 355, 355])
         scores = (matrix_ac + matrix_bd) / math.sqrt(
             self.d_k)  # (batch, head, time1, time2)
 
