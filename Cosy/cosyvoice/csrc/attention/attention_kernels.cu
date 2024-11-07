@@ -329,7 +329,7 @@ __global__ void xl_single_query_cached_kv_attention_kernel(
   const scalar_t* __restrict__ k_cache,   // [num_blocks, num_heads, head_size/x, block_size, x]
   const scalar_t* __restrict__ v_cache,   // [num_blocks, num_heads, head_size, block_size]
   const scalar_t* __restrict__ pos_bias_u, // [num_seqs, num_heads, head_size]
-  const scalar_t* __restrict__ matrix_bd, // [num_seqs, num_heads, head_size]
+  const scalar_t* __restrict__ matrix_bd, // [num_seqs, num_heads, num_blocks, block_size]
   const float scale,
   const int* __restrict__ block_tables,   // [num_seqs, max_num_blocks_per_seq]
   const int* __restrict__ context_lens,   // [num_seqs]
@@ -365,14 +365,12 @@ __global__ void xl_single_query_cached_kv_attention_kernel(
   // NOTE(woosuk): Because q is split from a qkv tensor, it may not be contiguous.
   const scalar_t* q_ptr = q + seq_idx * q_stride + head_idx * HEAD_SIZE;
   const scalar_t* pos_bias_u_ptr = pos_bias_u + seq_idx * q_stride + head_idx * HEAD_SIZE; // same shape with q
-  const scalar_t* pos_matrix_bd_ptr = matrix_bd + seq_idx * q_stride + head_idx * HEAD_SIZE; 
   Q_vec q_vecs[NUM_VECS_PER_THREAD]; 
 #pragma unroll
   for (int i = 0; i < NUM_VECS_PER_THREAD; i++) {
     const int vec_idx = thread_group_offset + i * THREAD_GROUP_SIZE;
     q_vecs[i] = *reinterpret_cast<const Q_vec*>(q_ptr + vec_idx * VEC_SIZE);
     q_vecs[i] = add(q_vecs[i], *reinterpret_cast<const Q_vec*>(pos_bias_u_ptr + vec_idx * VEC_SIZE));
-    q_vecs[i] = add(q_vecs[i], *reinterpret_cast<const Q_vec*>(pos_matrix_bd_ptr + vec_idx * VEC_SIZE));
   }
 
   // Memory planning.
@@ -421,10 +419,12 @@ __global__ void xl_single_query_cached_kv_attention_kernel(
 
       // Compute dot product.
       // This includes a reduction across the threads in the same thread group.
-      const float qk = scale * Qk_dot<scalar_t, THREAD_GROUP_SIZE>::dot(q_vecs, k_vecs);
+      const float qk = Qk_dot<scalar_t, THREAD_GROUP_SIZE>::dot(q_vecs, k_vecs);
       const bool mask = token_idx >= context_len;
     
       if (thread_group_offset == 0) {
+        const scalar_t matrix_bd_val = matrix_bd[token_idx];
+        qk = scale * (static_cast<float>(matrix_bd_val) + qk)
         // Store the partial reductions to shared memory.
         // NOTE(woosuk): It is required to zero out the masked logits.
         logits[token_idx] = mask ? 0.f : qk;

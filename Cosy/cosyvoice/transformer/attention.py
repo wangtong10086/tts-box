@@ -339,15 +339,16 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
        
         #print(q_with_bias_u.shape)  # same shape with q
         #print(q_with_bias_v.shape)  # same shape with q
-        #print(p.transpose(-2, -1).shape)
+        print(p.shape)
         matrix_bd = torch.matmul(q_with_bias_v, p.transpose(-2, -1))
         # NOTE(Xiang Lyu): Keep rel_shift since espnet rel_pos_emb is used
         # print(matrix_ac.shape, matrix_bd.shape) # torch.Size([1, 16, 355, 355]) torch.Size([1, 16, 355, 709])
-        print("matrix_ac: ", matrix_ac.shape)
-        print("matrix_bd: ", matrix_bd.shape)
+        
         if matrix_ac.shape != matrix_bd.shape:  
             matrix_bd = self.rel_shift(matrix_bd)
 
+        print("matrix_ac: ", matrix_ac.shape)
+        print("matrix_bd: ", matrix_bd.shape)
         # print(matrix_ac.shape, matrix_bd.shape) # torch.Size([1, 16, 355, 355]) torch.Size([1, 16, 355, 355])
         scores = (matrix_ac + matrix_bd) / math.sqrt(
             self.d_k)  # (batch, head, time1, time2)

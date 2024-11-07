@@ -167,6 +167,8 @@ def run_single_query_cached_kv_attention(
         num_tokens, 3, num_heads, head_size, dtype=dtype, device='cuda')
     qkv.uniform_(-1e-3, 1e-3) # 将 qkv 张量中的所有元素填充为从-1e-3到1e-3之间的均匀分布的随机数。
     query, _, _ = qkv.unbind(dim=1) #通过 unbind(dim=1) 将 qkv 分解为查询、键和值
+    
+    print(query.shape)
 
     x = 16 // torch.tensor([], dtype=dtype).element_size() #将 16 除以空张量的元素大小，从而得到 x 的值。这个值通常是与数据类型相关的,以字节为单位,16byte = 128bit,作为向量化的基础单位
     key_block_shape = (num_heads, head_size // x, block_size, x)
