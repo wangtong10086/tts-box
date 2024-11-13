@@ -185,6 +185,9 @@ class PageTableManager:
                 self.page_map[new_page_id] = phyiscal_current_page_id
                 # 将数据插入page pool对应的位置当中
                 self.page_pool[phyiscal_current_page_id][first_masked_pos, :, :] = data 
+                # 说明当前逻辑页已被填满
+                if new_page_id.count('M') == 0:
+                    del self.remain_pages[0]
         else: # 如果没有，表示所有的物理页均已填满，要重新申请一个物理页
             # 设置新申请物理页的逻辑页id
             current_block_id = [str(current_token_id)]
