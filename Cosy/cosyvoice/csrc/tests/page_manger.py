@@ -1,3 +1,4 @@
+from sympy import false
 import torch
 from typing import List, Tuple
 from collections import deque
@@ -187,103 +188,108 @@ class PageTableManager:
             
             
 
+# Helper function to initialize manager
+def init_manager(block_size=2, num_head=2, headsize=2, initial_pages=2, max_pages=4, dtype=torch.float32):
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    return PageTableManager(block_size=block_size, num_head=num_head, headsize=headsize,
+                            initial_pages=initial_pages, max_pages=max_pages, dtype=dtype), device
+
 def test_free_page_queue():
     # Initialize queue with a capacity of 5
     queue = FreePageQueue(5)
-    assert queue.dequeue_left() == 0, "Test Case 1 Failed"
-    assert queue.dequeue_left() == 1, "Test Case 2 Failed"
+    assert queue.dequeue_left() == 0, "FreePageQueue: Expected first element to be 0"
+    assert queue.dequeue_left() == 1, "FreePageQueue: Expected second element to be 1"
     queue.enqueue_right(5)
-    assert queue.dequeue_left() == 2, "Test Case 3 Failed"
-    assert queue.dequeue_left() == 3, "Test Case 4 Failed"
+    assert queue.dequeue_left() == 2, "FreePageQueue: Expected third element to be 2"
+    assert queue.dequeue_left() == 3, "FreePageQueue: Expected fourth element to be 3"
     print("FreePageQueue tests passed.")
 
 def test_allocate_page():
-    manager = PageTableManager(block_size=2, num_head=2, headsize=2, initial_pages=5, max_pages=10, dtype=torch.float32)
+    manager, _ = init_manager(initial_pages=5, max_pages=10)
     page_id = "page1"
     allocated_page = manager.allocate_page(page_id)
-    assert allocated_page != -1, "Failed to allocate a valid page"
-    assert manager.page_map[page_id] == allocated_page, "Page mapping incorrect"
+    assert allocated_page != -1, "Page allocation failed: No valid page allocated"
+    assert manager.page_map[page_id] == allocated_page, "Page allocation failed: Incorrect page mapping"
     print("allocate_page test passed.")
 
 def test_prefill():
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    manager = PageTableManager(block_size=2, num_head=2, headsize=2, initial_pages=2, max_pages=4, dtype=torch.float32)
+    manager, device = init_manager()
     token_idx_list = [1, 2, 3, 4, 5, 6]
-    data = torch.ones((1, 6, 2, 2), device=device, dtype=torch.float32)
+    data = torch.ones((1, len(token_idx_list), 2, 2), device=device, dtype=torch.float32)
     manager.prefill(token_idx_list, data=data)
     
-    for page_id in manager.page_map:
-        idx = manager.page_map[page_id]
-        assert (manager.page_pool[idx] == 1).all(), f"Prefill test failed for page {page_id}"
-    
+    for page_id, idx in manager.page_map.items():
+        assert (manager.page_pool[idx] == 1).all(), f"Prefill failed: Data mismatch on page {page_id}"
     print("Prefill test passed.")
 
-def test_decode_new_page():
-
+def test_decode_fill_page():
     torch.manual_seed(1999)
-
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    manager = PageTableManager(block_size=2, num_head=2, headsize=2, initial_pages=2, max_pages=4, dtype=torch.float32)
+    manager, device = init_manager()
     token_idx_list = [1, 2, 3, 4, 5]
-    data = torch.ones((1, 5, 2, 2), device=device, dtype=torch.float32)
+    data = torch.ones((1, len(token_idx_list), 2, 2), device=device, dtype=torch.float32)
     manager.prefill(token_idx_list, data=data)
     
     new_token_idx = [1, 2, 3, 4, 5, 6]
     token_data = torch.randn((2, 2), device=device, dtype=torch.float32)
-    print(f"token_data: {token_data}")
     manager.decode(new_token_idx, data=token_data)
     
     logical_page_id, _ = manager.replace_first_masked_position("5#M", 6)
     physical_page_idx = manager.page_map.get(logical_page_id, -1)
     
-    print(f"page token_data: {manager.page_pool[physical_page_idx][1]}")
-    assert physical_page_idx != -1, "Failed to allocate page for decode."
-    assert (manager.page_pool[physical_page_idx][1] == token_data).all(), "Decode data mismatch"
-    print("Decode test passed.")
-
+    assert physical_page_idx != -1, "Decode failed: No allocated page for new token."
+    assert (manager.page_pool[physical_page_idx][1] == token_data).all(), "Decode failed: Data mismatch on decoded page"
+    print("Decode fill reamin page test passed.")
 
 def test_decode_reuse():
-
-    print("test decode reuse !!! ")
     torch.manual_seed(1999)
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-
-     # 定义词嵌入矩阵
-    vocab_size = 10  # 假设词汇表大小为10
-    embedding_dim = 4  # 假设每个词的嵌入维度为4
-    embeddings = torch.randn(vocab_size, embedding_dim, device=device, dtype=torch.float32)
+    manager, device = init_manager()
     
-    manager = PageTableManager(block_size=2, num_head=2, headsize=2, initial_pages=2, max_pages=4, dtype=torch.float32)
+    vocab_size, embedding_dim = 10, 4
+    embeddings = torch.randn(vocab_size, embedding_dim, device=device, dtype=torch.float32)
     token_idx_list = [1, 2, 3, 4, 3]
     data = embeddings[token_idx_list].view(1, len(token_idx_list), 2, 2)
     manager.prefill(token_idx_list, data=data)
-    print(f"prefill manager.remain_pages: {manager.remain_pages}")
     
     new_token_id = 4
     token_idx_list.append(new_token_id)
     token_data = embeddings[new_token_id].view(1, 1, 2, 2)
     manager.decode(token_idx_list, data=token_data)
-    print(f"decode manager.remain_pages: {manager.remain_pages}")
     
     logical_page_id, _ = manager.replace_first_masked_position("3#M", 4)
     physical_page_idx = manager.page_map.get(logical_page_id, -1)
     
-    assert physical_page_idx != -1, "Failed to allocate page for decode."
-
-    print("free page ...")
-    for page in manager.free_page_queue.free_page_queue:
-        print(page)
-
-    print("page pool ...")
-    for i in range(manager.current_capacity):
-        print(manager.page_pool[i])
-
-    print("Decode test passed.")
+    assert physical_page_idx != -1, "Decode reuse failed: No valid page allocated."
+    assert 2 in manager.free_page_queue.free_page_queue, "Decode reuse failed: Expected page not reused."
+    assert (manager.page_pool[physical_page_idx][1] == token_data).all(), "Decode failed: Data mismatch on decoded page"
+    print("Decode reuse test passed.")
 
 
-# Running the test cases
-#test_free_page_queue()
-#test_allocate_page()
-#test_prefill()
-#test_decode_new_page()
+def test_decode_new_page():
+    torch.manual_seed(1999)
+    manager, device = init_manager()
+    
+    vocab_size, embedding_dim = 10, 4
+    embeddings = torch.randn(vocab_size, embedding_dim, device=device, dtype=torch.float32)
+    token_idx_list = [1, 2, 3, 4]
+    data = embeddings[token_idx_list].view(1, len(token_idx_list), 2, 2)
+    manager.prefill(token_idx_list, data=data)
+    
+    new_token_id = 5
+    token_idx_list.append(new_token_id)
+    token_data = embeddings[new_token_id].view(1, 1, 2, 2)
+    manager.decode(token_idx_list, data=token_data)
+    
+    logical_page_id, _ = manager.replace_first_masked_position("M#M", 5)
+    physical_page_idx = manager.page_map.get(logical_page_id, -1)
+    
+    assert physical_page_idx != -1, "Decode failed: No valid page allocated."
+    assert (manager.page_pool[physical_page_idx][0] == token_data).all(), "Decode failed: Data mismatch on decoded page"
+    print("Decode new page test passed.")
+
+
+test_free_page_queue()
+test_allocate_page()
+test_prefill()
+test_decode_fill_page()
 test_decode_reuse()
+test_decode_new_page()
