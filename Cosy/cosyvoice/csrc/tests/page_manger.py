@@ -29,11 +29,12 @@ class PageTableManager:
         self.expansion_step = initial_expansion_step  # 初始扩展步长
         self.current_capacity = initial_pages
         self.dtype = dtype
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
         # 页面池
         self.page_pool = []
         for i in range(self.current_capacity):
-            self.page_pool.append(torch.zeros((self.block_size, self.num_head, self.headsize), device='cuda', dtype=self.dtype))
+            self.page_pool.append(torch.zeros((self.block_size, self.num_head, self.headsize), device=self.device, dtype=self.dtype))
         # 物理页的引用计数，初始时为0
         self.page_usage = [0] * self.current_capacity
         # 虚拟页--物理也映射表
@@ -56,7 +57,7 @@ class PageTableManager:
 
         # 扩展页面池和页面使用跟踪数组
         for i in range(additional_pages):
-            self.page_pool.append(torch.zeros((self.block_size, self.num_head, self.headsize), device='cuda', dtype=self.dtype))
+            self.page_pool.append(torch.zeros((self.block_size, self.num_head, self.headsize), device=self.device, dtype=self.dtype))
             
         self.page_usage.extend([0] * additional_pages)
         self.free_page_queue.batch_enqueue_right(range(self.current_capacity, new_capacity))
@@ -204,9 +205,10 @@ def test_allocate_page():
     print("allocate_page test passed.")
 
 def test_prefill():
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
     manager = PageTableManager(block_size=2, num_head=2, headsize=2, initial_pages=2, max_pages=4, dtype=torch.float32)
-    token_idx_list = [1, 2, 3, 4, 5]
-    data = torch.ones((1, 5, 2, 2), device='cuda', dtype=torch.float32)
+    token_idx_list = [1, 2, 3, 4, 5, 6]
+    data = torch.ones((1, 6, 2, 2), device=device, dtype=torch.float32)
     manager.prefill(token_idx_list, data=data)
     
     for page_id in manager.page_map:
@@ -216,20 +218,26 @@ def test_prefill():
     print("Prefill test passed.")
 
 def test_decode():
+
+    torch.manual_seed(1999)
+
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
     manager = PageTableManager(block_size=2, num_head=2, headsize=2, initial_pages=2, max_pages=4, dtype=torch.float32)
     token_idx_list = [1, 2, 3, 4, 5]
-    data = torch.ones((1, 5, 2, 2), device='cuda', dtype=torch.float32)
+    data = torch.ones((1, 5, 2, 2), device=device, dtype=torch.float32)
     manager.prefill(token_idx_list, data=data)
     
     new_token_idx = [1, 2, 3, 4, 5, 6]
-    token_data = torch.ones((2, 2), device='cuda', dtype=torch.float32)
+    token_data = torch.randn((2, 2), device=device, dtype=torch.float32)
+    print(f"token_data: {token_data}")
     manager.decode(new_token_idx, data=token_data)
     
     logical_page_id, _ = manager.replace_first_masked_position("5#M", 6)
     physical_page_idx = manager.page_map.get(logical_page_id, -1)
     
+    print(f"page token_data: {manager.page_pool[physical_page_idx][1]}")
     assert physical_page_idx != -1, "Failed to allocate page for decode."
-    assert (manager.page_pool[physical_page_idx][0] == data).all(), "Decode data mismatch"
+    assert (manager.page_pool[physical_page_idx][1] == token_data).all(), "Decode data mismatch"
     print("Decode test passed.")
 
 # Running the test cases
