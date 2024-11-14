@@ -159,6 +159,7 @@ class PageTableManager:
                    self.free_page_queue.enqueue_right(physical_current_page_id)
                    # 删除掉对应的逻辑页--物理页映射
                    del self.page_map[logical_remain_page_id]
+                   del self.remain_pages[0]
             else: # 如果没有, 往未填满的page中插入
                 # 将数据插入page pool对应的位置当中
                 self.page_pool[self.page_map[logical_remain_page_id]][first_masked_pos, :, :] = data
@@ -217,7 +218,7 @@ def test_prefill():
     
     print("Prefill test passed.")
 
-def test_decode():
+def test_decode_new_page():
 
     torch.manual_seed(1999)
 
@@ -240,8 +241,49 @@ def test_decode():
     assert (manager.page_pool[physical_page_idx][1] == token_data).all(), "Decode data mismatch"
     print("Decode test passed.")
 
+
+def test_decode_reuse():
+
+    print("test decode reuse !!! ")
+    torch.manual_seed(1999)
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+     # 定义词嵌入矩阵
+    vocab_size = 10  # 假设词汇表大小为10
+    embedding_dim = 4  # 假设每个词的嵌入维度为4
+    embeddings = torch.randn(vocab_size, embedding_dim, device=device, dtype=torch.float32)
+    
+    manager = PageTableManager(block_size=2, num_head=2, headsize=2, initial_pages=2, max_pages=4, dtype=torch.float32)
+    token_idx_list = [1, 2, 3, 4, 3]
+    data = embeddings[token_idx_list].view(1, len(token_idx_list), 2, 2)
+    manager.prefill(token_idx_list, data=data)
+    print(f"prefill manager.remain_pages: {manager.remain_pages}")
+    
+    new_token_id = 4
+    token_idx_list.append(new_token_id)
+    token_data = embeddings[new_token_id].view(1, 1, 2, 2)
+    manager.decode(token_idx_list, data=token_data)
+    print(f"decode manager.remain_pages: {manager.remain_pages}")
+    
+    logical_page_id, _ = manager.replace_first_masked_position("3#M", 4)
+    physical_page_idx = manager.page_map.get(logical_page_id, -1)
+    
+    assert physical_page_idx != -1, "Failed to allocate page for decode."
+
+    print("free page ...")
+    for page in manager.free_page_queue.free_page_queue:
+        print(page)
+
+    print("page pool ...")
+    for i in range(manager.current_capacity):
+        print(manager.page_pool[i])
+
+    print("Decode test passed.")
+
+
 # Running the test cases
-test_free_page_queue()
-test_allocate_page()
-test_prefill()
-test_decode()
+#test_free_page_queue()
+#test_allocate_page()
+#test_prefill()
+#test_decode_new_page()
+test_decode_reuse()
