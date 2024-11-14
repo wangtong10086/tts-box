@@ -96,7 +96,9 @@ class PageTableManager:
         first_masked_pos = parts.index('M')
         parts[first_masked_pos] = str(token_id)
         return '#'.join(parts), first_masked_pos
-            
+    
+    def get_cached_pages(self):
+        return self.page_pool
     def prefill(self, token_idx_list: list, data: torch.Tensor = None):
         """
         预填充页面池，根据 token_idx_list 划分块并将数据填充到页面中。

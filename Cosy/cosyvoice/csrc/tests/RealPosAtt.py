@@ -3,6 +3,7 @@ from typing import Tuple
 
 import torch
 from torch import nn
+from page_manger import PageTableManager
 
 import attention_cuda
 
@@ -337,45 +338,48 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         return self.forward_attention(v, scores, mask), k, v
     
     
-    def infer_shape(self, q_shape, key_cache_shape):
-        """
-        推断两个张量相乘后的形状，而不进行实际的乘法运算。
-        """
-        seq_len_q, num_heads, head_dim_q = q_shape
-        seq_len_k, head_dim_k, num_heads_k = key_cache_shape
-
-        # 检查 head_dim 是否相同
-        if head_dim_q != head_dim_k:
-            raise ValueError("q 和 key_cache 的 head_dim 必须相同")
-
-        # 推断结果形状
-        result_shape = (seq_len_q, num_heads, seq_len_k)
-        return result_shape
-    
     def infer(
         self,
+        num_heads: int,
+        head_size: int,
+        query_index: int,
+        kv_current_index: int,
+        kv_indices: list,
         query: torch.Tensor,
         key: torch.Tensor,
         value: torch.Tensor,
-        num_heads: int,
-        head_size: int,
         key_cache: torch.Tensor,
         value_cache: torch.Tensor,
         pos_emb: torch.Tensor = torch.empty(0),
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         
+        block_size = 16
+        key_cache = torch.squeeze(key_cache, dim=0).transpose(0, 1)   # [16, 10, 64]  -- > [10, 16, 64] 
+        value_cache = torch.squeeze(value_cache, dim=0).transpose(0, 1)   # [16, 10, 64] -- > [10, 16, 64] 
+        
+        key_cache_manger = PageTableManager(block_size=block_size, num_head=num_heads, headsize=head_size,
+                                       initial_pages=16, max_pages=512, dtype=query.dtype)
+        value_cache_manger = PageTableManager(block_size=block_size, num_head=num_heads, headsize=head_size,
+                                       initial_pages=16, max_pages=512, dtype=query.dtype)
+        
+        key_cache_manger.prefill(kv_indices, key_cache)
+        value_cache_manger.prefill(kv_indices, value_cache)
+        
     
         q, k, v = self.forward_qkv(query, key, value)
         q = q.transpose(1, 2)  # [1, 1, 16, 64]
+        q = torch.squeeze(q, dim=0) # [1, 16, 64]
+        k = torch.squeeze(k, dim=0) # [1, 16, 64]
+        v = torch.squeeze(v, dim=0) # [1, 16, 64]
         
-        key_cache = torch.cat([key_cache, k], dim=2) # [1, 16, 10, 64] -- > [1, 16, 11, 64]
-        value_cache = torch.cat([value_cache, v], dim=2) # [1, 16, 10, 64] --> [1, 16, 11, 64]
+        kv_indices.append(kv_current_index)
+        key_cache_manger.decode(kv_indices, k)
+        value_cache_manger.decode(kv_indices, v)
         
-        q = torch.squeeze(key_cache, dim=0) # [1, 16, 64]
-        key_cache = torch.squeeze(key_cache, dim=0).transpose(0, 1)   # [16, 11, 64]  -- > [11, 16, 64] 
-        value_cache = torch.squeeze(value_cache, dim=0).transpose(0, 1)   # [16, 11, 64] -- > [11, 16, 64] 
+        key_cache = key_cache_manger.get_cached_pages()
+        value_cache = value_cache_manger.get_cached_pages()
         
-        qk_shape = self.infer_shape(q.shape, key_cache.shape)
+        qk_shape = (1, num_heads, key_cache.size(0)+1)
         
         q_with_bias_v = (q + self.pos_bias_v) #[1, 16, 64]
         n_batch_pos = pos_emb.size(0)
@@ -386,22 +390,13 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         if qk_shape != matrix_bd.shape:
             matrix_bd = self.rel_shift(matrix_bd) # [1, 16, 11]
         
-        block_size = 16
-        
         scale = float(1.0 / (head_size ** 0.5))
         
-        context_lens = [key_cache.shape[0]] # 生成一个长度为 num_tokens 的列表 context_lens，每个元素都是从 1 到 MAX_SEQ_LEN 之间的随机整数
+        context_lens = [key_cache.size(0)+1] # 生成一个长度为 num_tokens 的列表 context_lens，每个元素都是从 1 到 MAX_SEQ_LEN 之间的随机整数
         max_context_len = max(context_lens)
         context_lens = torch.tensor(context_lens, dtype=torch.int, device='cuda')
-
-        num_blocks_per_seq = (max_context_len + block_size - 1) // block_size # 计算块数 (num_blocks_per_seq)，用于确定如何将上下文长度划分为多个块。
         
-        block_tables = []
-        
-        block_table = [
-            idx  # kv cache上下文对应的block编码
-            for idx in range(num_blocks_per_seq) 
-        ]
+        block_table = key_cache_manger.page_map
         
         block_tables.append(block_table)
         block_tables = torch.tensor(block_tables, dtype=torch.int, device='cuda')
@@ -422,9 +417,11 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
             max_context_len,
         )
         
-        
-        
-        
+
+def make_vocab(vocab_size, embedding_dim, device, dtype):
+    embeddings = torch.randn(vocab_size, embedding_dim, device=device, dtype=dtype)
+    return embeddings
+      
         
     
 
@@ -432,6 +429,10 @@ def test_att():
     
     # 设置随机种子
     torch.manual_seed(1999)
+    
+    dtype = torch.float32
+    
+    embeddings = make_vocab(vocab_size=5000, embedding_dim=1024, device='cuda', dtype=dtype)
 
     # 定义 Multi-Head Attention 的参数
     dim = 1024     # dim
@@ -446,13 +447,22 @@ def test_att():
     # 创建 RelPositionMultiHeadedAttention 的实例
     attention_layer = RelPositionMultiHeadedAttention(n_head=head_num, n_feat=dim, dropout_rate=dropout_rate)
 
-    # 创建随机输入张量
-    query = torch.rand(batch_size, time1, dim)  # Query tensor
-    mask = torch.ones(batch_size, 1, time2)         # Mask tensor (all ones)
-    cache = torch.rand((1, head_num, cache_t, head_size*2)) # Cache tensor
-    pos_emb = torch.rand(batch_size, 2*cache_t+1, dim) # Positional embedding tensor
-    
-    key_cache, value_cache = torch.split(cache, cache.size(-1) // 2, dim=-1)
+    # 从 embeddings 中获取 query
+    query_indices = torch.randint(0, 5000, (batch_size, time1)).to('cuda')  # 随机生成查询词汇索引
+    query = embeddings[query_indices].to('cuda').view(batch_size, time1, dim)  # 获取 query 嵌入
+
+    # 从 embeddings 中获取 key_cache 和 value_cache
+    vocab_indices = torch.randint(0, 5000, (1, head_num, cache_t)).to('cuda')  # 随机生成词汇索引
+    key_embeddings = embeddings[vocab_indices].to('cuda')  # 获取 key 嵌入
+    value_embeddings = embeddings[vocab_indices].to('cuda')  # 获取 value 嵌入     
+
+    # 调整形状以匹配 key_cache 和 value_cache
+    key_cache = key_embeddings.view(1, head_num, cache_t, head_size)
+    value_cache = value_embeddings.view(1, head_num, cache_t, head_size)
+
+    # 创建其他必要的张量
+    mask = torch.ones(batch_size, 1, time2).to('cuda')     # Mask tensor (all ones)
+    pos_emb = torch.rand(batch_size, 2*cache_t+1, dim).to('cuda')  # Positional embedding tensor
 
     # 调用注意力层的 forward 方法
     output, key_cache, value_cache = attention_layer(query, query, query, mask, pos_emb, key_cache, value_cache)
@@ -476,25 +486,6 @@ def test_shif():
     x = attention_layer.rel_shift(query)
     print(x)
 
-
-def test_mask():
-    torch.manual_seed(1999)
-    mask = torch.tensor([[[1, 0, 1], [0, 1, 0]]], dtype=torch.bool)  # (batch, *, time2)
-    scores = torch.randn(1, 1, 2, 3)  # (batch, head, time1, time2)
-    print(mask.shape)
-    if mask.size(2) > 0:
-        mask = mask.unsqueeze(1).eq(0)  # (batch, 1, *, time2)
-        print(mask)
-        mask = mask[:, :, :, :scores.size(-1)]  # (batch, 1, *, time2)
-        print(mask)
-        scores = scores.masked_fill(mask, -float('inf'))
-        print(scores)
-        attn = torch.softmax(scores, dim=-1).masked_fill(mask, 0.0)  # (batch, head, time1, time2)
-        print(attn)
-    else:
-        attn = torch.softmax(scores, dim=-1)
-
-    print(attn)
 
 
 if __name__ == '__main__':
