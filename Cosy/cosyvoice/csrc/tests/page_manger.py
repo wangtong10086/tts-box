@@ -32,9 +32,9 @@ class PageTableManager:
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
         # 页面池
-        self.page_pool = []
-        for i in range(self.current_capacity):
-            self.page_pool.append(torch.zeros((self.block_size, self.num_head, self.headsize), device=self.device, dtype=self.dtype))
+        self.page_pool = torch.zeros((self.current_capacity, self.block_size, self.num_head, self.headsize), 
+                                      device=self.device, 
+                                      dtype=self.dtype)
         # 物理页的引用计数，初始时为0
         self.page_usage = [0] * self.current_capacity
         # 虚拟页--物理也映射表
@@ -58,9 +58,11 @@ class PageTableManager:
         additional_pages = new_capacity - self.current_capacity
 
         # 扩展页面池和页面使用跟踪数组
-        for i in range(additional_pages):
-            self.page_pool.append(torch.zeros((self.block_size, self.num_head, self.headsize), device=self.device, dtype=self.dtype))
-            
+        new_pages = torch.zeros((additional_pages, self.block_size, self.num_head, self.headsize), 
+                        device=self.device, 
+                        dtype=self.dtype)
+        self.page_pool = torch.cat((self.page_pool, new_pages), dim=0)
+        
         self.page_usage.extend([0] * additional_pages)
         self.free_page_queue.batch_enqueue_right(range(self.current_capacity, new_capacity))
         self.current_capacity = new_capacity
@@ -138,7 +140,7 @@ class PageTableManager:
             # 对于每个块中的每个 token_idx，从 data 中提取对应的 token embedding
             start_pos = idx * self.block_size
             end_pos = min(start_pos + self.block_size, data.size(0))
-            self.page_pool[physical_page_idx][0:end_pos-start_pos, :, :] = data[start_pos:end_pos, :, :]
+            self.page_pool[physical_page_idx, 0:end_pos-start_pos, :, :] = data[start_pos:end_pos, :, :]
             
     
     def decode(self, block_token_idx:List[int], data:torch.Tensor=None):
@@ -179,7 +181,7 @@ class PageTableManager:
                    del self.remain_pages[0]
             else: # 如果没有, 往未填满的page中插入
                 # 将数据插入page pool对应的位置当中
-                self.page_pool[self.page_map[logical_remain_page_id]][first_masked_pos, :, :] = data
+                self.page_pool[self.page_map[logical_remain_page_id], first_masked_pos, :, :] = data
                 # 删除旧的逻辑页面id -- 物理页id映射，因为逻辑页面id要更换
                 del self.page_map[logical_remain_page_id]
                 # 更新逻辑页id的映射
@@ -201,7 +203,7 @@ class PageTableManager:
             if physical_page_idx == -1:
                 raise ValueError("Allocate memory out of max page size, Failed to allocate page for block:", physical_page_idx)
             # 将数据插入page pool对应的位置当中
-            self.page_pool[physical_page_idx][0, :, :] = data 
+            self.page_pool[physical_page_idx, 0, :, :] = data 
             self.sequence_page_table.append(physical_page_idx)
             
 
@@ -258,7 +260,7 @@ def test_decode_fill_page():
     physical_page_idx = manager.page_map.get(logical_page_id, -1)
     
     assert physical_page_idx != -1, "Decode failed: No allocated page for new token."
-    assert (manager.page_pool[physical_page_idx][1] == token_data).all(), "Decode failed: Data mismatch on decoded page"
+    assert (manager.page_pool[physical_page_idx, 1] == token_data).all(), "Decode failed: Data mismatch on decoded page"
     print("Decode fill reamin page test passed.")
 
 def test_decode_reuse():
@@ -283,7 +285,7 @@ def test_decode_reuse():
     
     assert physical_page_idx != -1, "Decode reuse failed: No valid page allocated."
     assert 2 in manager.free_page_queue.free_page_queue, "Decode reuse failed: Expected page not reused."
-    assert (manager.page_pool[physical_page_idx][1] == token_data).all(), "Decode failed: Data mismatch on decoded page"
+    assert (manager.page_pool[physical_page_idx, 1] == token_data).all(), "Decode failed: Data mismatch on decoded page"
     print("Decode reuse test passed.")
 
 
@@ -308,7 +310,7 @@ def test_decode_new_page():
     physical_page_idx = manager.page_map.get(logical_page_id, -1)
     
     assert physical_page_idx != -1, "Decode failed: No valid page allocated."
-    assert (manager.page_pool[physical_page_idx][0] == token_data).all(), "Decode failed: Data mismatch on decoded page"
+    assert (manager.page_pool[physical_page_idx, 0] == token_data).all(), "Decode failed: Data mismatch on decoded page"
     print("Decode new page test passed.")
 
 
