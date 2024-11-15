@@ -329,22 +329,22 @@ __global__ void xl_single_query_cached_kv_attention_kernel(
   const scalar_t* __restrict__ k_cache,   // [num_blocks, num_heads, head_size/x, block_size, x]
   const scalar_t* __restrict__ v_cache,   // [num_blocks, num_heads, head_size, block_size]
   const scalar_t* __restrict__ pos_bias_u, // [num_seqs, num_heads, head_size]
-  const scalar_t* __restrict__ matrix_bd, // [num_seqs, num_heads, num_blocks, block_size]
+  const scalar_t* __restrict__ matrix_bd, // [num_seqs, num_heads, head_size, block_size]
   const float scale,
   const int* __restrict__ block_tables,   // [num_seqs, max_num_blocks_per_seq]
   const int* __restrict__ context_lens,   // [num_seqs]
   const int max_num_blocks_per_seq,
   const int q_stride) 
 {
-  constexpr int THREAD_GROUP_SIZE = MAX(WARP_SIZE / BLOCK_SIZE, 1);
-  constexpr int NUM_TOKENS_PER_THREAD_GROUP = (BLOCK_SIZE + WARP_SIZE - 1) / WARP_SIZE;
-  constexpr int NUM_WARPS = NUM_THREADS / WARP_SIZE;
-  const int thread_idx = threadIdx.x;
-  const int warp_idx = thread_idx / WARP_SIZE;
-  const int lane = thread_idx % WARP_SIZE;  
-  const int head_idx = blockIdx.x;
-  const int num_heads = gridDim.x;
-  const int seq_idx = blockIdx.y; 
+  constexpr int THREAD_GROUP_SIZE = MAX(WARP_SIZE / BLOCK_SIZE, 1); // assume BLOCK_SIZE is 16, THREAD_GROUP_SIZE=2
+  constexpr int NUM_TOKENS_PER_THREAD_GROUP = (BLOCK_SIZE + WARP_SIZE - 1) / WARP_SIZE; // (16 + 31) / 32 =1
+  constexpr int NUM_WARPS = NUM_THREADS / WARP_SIZE; // 128 / 32 = 4
+  const int thread_idx = threadIdx.x;  // 0, 1, 2 , ... , 127
+  const int warp_idx = thread_idx / WARP_SIZE; // 0, 0 , ... , 1, 1, ..., 2, 2, ... , 3, 3 ...
+  const int lane = thread_idx % WARP_SIZE;// 0, 1 , 2 ..., 31,  0, 1 , 2 ..., 31,  0, 1 , 2 ..., 31,  0, 1 , 2 ..., 31  
+  const int head_idx = blockIdx.x;  // 0, 1, 2, ..., 15
+  const int num_heads = gridDim.x; // number of heads, assume dim is 2048, head size is 128, then num_heads is 16
+  const int seq_idx = blockIdx.y; // 0, 1, 2, ..., seq_len - 1
   // A vector type to store a part of a key or a query.
   // The vector size is configured in such a way that the threads in a thread group
   // fetch or compute 16 bytes at a time.
@@ -353,10 +353,10 @@ __global__ void xl_single_query_cached_kv_attention_kernel(
   constexpr int VEC_SIZE = MAX(16 / (THREAD_GROUP_SIZE * sizeof(scalar_t)), 1);
   using K_vec = typename Vec<scalar_t, VEC_SIZE>::Type;
   using Q_vec = typename Vec<scalar_t, VEC_SIZE>::Type;
-  constexpr int NUM_ELEMS_PER_THREAD = HEAD_SIZE / THREAD_GROUP_SIZE;
-  constexpr int NUM_VECS_PER_THREAD = NUM_ELEMS_PER_THREAD / VEC_SIZE;  
-  const int thread_group_idx = thread_idx / THREAD_GROUP_SIZE;
-  const int thread_group_offset = thread_idx % THREAD_GROUP_SIZE; 
+  constexpr int NUM_ELEMS_PER_THREAD = HEAD_SIZE / THREAD_GROUP_SIZE; // 128/2 = 64
+  constexpr int NUM_VECS_PER_THREAD = NUM_ELEMS_PER_THREAD / VEC_SIZE; // 64/2 = 32 
+  const int thread_group_idx = thread_idx / THREAD_GROUP_SIZE; // 0, 0, 1, 1, ..., 63, 63 -- two elem keep a group
+  const int thread_group_offset = thread_idx % THREAD_GROUP_SIZE;// 0, 1, 0, 1, ..., 0, 1 
   // Load the query to registers.
   // Each thread in a thread group has a different part of the query.
   // For example, if the the thread group size is 4, then the first thread in the group
