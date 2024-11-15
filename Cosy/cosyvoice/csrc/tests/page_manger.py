@@ -1,4 +1,3 @@
-from sympy import false
 import torch
 from typing import List, Tuple
 from collections import deque
@@ -42,6 +41,8 @@ class PageTableManager:
         self.page_map = {}
         # 未完全填充的逻辑页编号列表
         self.remain_pages = []
+        # 序列中每个token对应的物理页, eg, sequence_page_table[0]代表第一个token对应的物理页
+        self.sequence_page_table = []
         
         # 空闲 page 队列  -- 左侧出队，右侧入队
         self.free_page_queue = FreePageQueue(self.current_capacity)
@@ -126,12 +127,14 @@ class PageTableManager:
         # 为每个块分配页面并填充
         for idx, block in enumerate(blocks):
             logical_page_id = self.hash_block(block)
+            mask_count = logical_page_id.count('M')
             if 'M' in logical_page_id:
                 self.remain_pages.append(logical_page_id)
             physical_page_idx = self.allocate_page(logical_page_id)
             if physical_page_idx == -1:
                 raise ValueError("Allocate memory out of max page size, Failed to allocate page for block:", block)
-            
+            fill_token_size = self.block_size - mask_count
+            self.sequence_page_table.extend([physical_page_idx] * fill_token_size)
             # 对于每个块中的每个 token_idx，从 data 中提取对应的 token embedding
             start_pos = idx * self.block_size
             end_pos = min(start_pos + self.block_size, data.size(0))
@@ -143,7 +146,8 @@ class PageTableManager:
         current_token_id = block_token_idx[-1]
         # 如果有未填满的page
         if self.remain_pages:
-            # 找到未填满的page
+            # 找到未填满的page, 现在只考虑单个sequence，所以remain_pages只会有一个元素
+            # 并且该元素一定指向先前生成token的尾端
             logical_remain_page_id = self.remain_pages[0]
             # 替换其中首个'M'字段，组成新的逻辑页id, 并查找第一个 'M' 在列表中的位置
             new_page_id, first_masked_pos = self.replace_first_masked_position(logical_remain_page_id, current_token_id)
@@ -156,6 +160,16 @@ class PageTableManager:
                 # 当前引用更新，不再引用旧的物理页
                 self.page_usage[physical_current_page_id] -= 1
                 self.page_usage[physical_update_page_id] += 1
+
+                # 找到先前生成token有多少个mask，只考虑单个sequence，走入该分支，一定是1
+                mask_count = logical_remain_page_id.count('M')
+                # 对应可以找到该page填充的token数目
+                fill_token_size = self.block_size - mask_count
+                # 改写先前对应token的映射
+                self.sequence_page_table[-fill_token_size:] = [physical_update_page_id] * fill_token_size
+                # 将当前生成token对应的物理页添加到page table中
+                self.sequence_page_table.append(physical_update_page_id)
+
                 # 检查先前的物理页是否有别的引用,如果没有
                 if self.page_usage[physical_current_page_id] == 0:
                    # 将先前的物理页放入空闲物理页队列中
@@ -170,6 +184,7 @@ class PageTableManager:
                 del self.page_map[logical_remain_page_id]
                 # 更新逻辑页id的映射
                 self.page_map[new_page_id] = physical_current_page_id
+                self.sequence_page_table.append(physical_current_page_id)
                 # 说明当前逻辑页已被填满
                 if new_page_id.count('M') == 0:
                     del self.remain_pages[0]
@@ -187,7 +202,7 @@ class PageTableManager:
                 raise ValueError("Allocate memory out of max page size, Failed to allocate page for block:", physical_page_idx)
             # 将数据插入page pool对应的位置当中
             self.page_pool[physical_page_idx][0, :, :] = data 
-            
+            self.sequence_page_table.append(physical_page_idx)
             
 
 # Helper function to initialize manager
@@ -231,9 +246,13 @@ def test_decode_fill_page():
     data = torch.ones((1, len(token_idx_list), 2, 2), device=device, dtype=torch.float32)
     manager.prefill(token_idx_list, data=data)
     
+    print(manager.sequence_page_table)
+    
     new_token_idx = [1, 2, 3, 4, 5, 6]
     token_data = torch.randn((2, 2), device=device, dtype=torch.float32)
     manager.decode(new_token_idx, data=token_data)
+
+    print(manager.sequence_page_table)
     
     logical_page_id, _ = manager.replace_first_masked_position("5#M", 6)
     physical_page_idx = manager.page_map.get(logical_page_id, -1)
@@ -251,11 +270,13 @@ def test_decode_reuse():
     token_idx_list = [1, 2, 3, 4, 3]
     data = embeddings[token_idx_list].view(1, len(token_idx_list), 2, 2)
     manager.prefill(token_idx_list, data=data)
+    print(manager.sequence_page_table)
     
     new_token_id = 4
     token_idx_list.append(new_token_id)
     token_data = embeddings[new_token_id].view(1, 1, 2, 2)
     manager.decode(token_idx_list, data=token_data)
+    print(manager.sequence_page_table)
     
     logical_page_id, _ = manager.replace_first_masked_position("3#M", 4)
     physical_page_idx = manager.page_map.get(logical_page_id, -1)
@@ -275,12 +296,14 @@ def test_decode_new_page():
     token_idx_list = [1, 2, 3, 4]
     data = embeddings[token_idx_list].view(1, len(token_idx_list), 2, 2)
     manager.prefill(token_idx_list, data=data)
+    print(manager.sequence_page_table)
     
     new_token_id = 5
     token_idx_list.append(new_token_id)
     token_data = embeddings[new_token_id].view(1, 1, 2, 2)
     manager.decode(token_idx_list, data=token_data)
-    
+    print(manager.sequence_page_table)
+
     logical_page_id, _ = manager.replace_first_masked_position("M#M", 5)
     physical_page_idx = manager.page_map.get(logical_page_id, -1)
     

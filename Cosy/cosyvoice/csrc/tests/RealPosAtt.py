@@ -396,7 +396,7 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         max_context_len = max(context_lens)
         context_lens = torch.tensor(context_lens, dtype=torch.int, device='cuda')
         
-        block_table = key_cache_manger.page_map
+        block_table = key_cache_manger.sequence_page_table
         
         block_tables.append(block_table)
         block_tables = torch.tensor(block_tables, dtype=torch.int, device='cuda')
