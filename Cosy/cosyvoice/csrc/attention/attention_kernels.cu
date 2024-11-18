@@ -350,11 +350,12 @@ __global__ void xl_single_query_cached_kv_attention_kernel(
   // fetch or compute 16 bytes at a time.
   // For example, if the size of a thread group is 4 and the data type is half,
   // then the vector size is 16 / (4 * sizeof(half)) == 2.
+  // 16 / (2 * 2) = 4
   constexpr int VEC_SIZE = MAX(16 / (THREAD_GROUP_SIZE * sizeof(scalar_t)), 1);
   using K_vec = typename Vec<scalar_t, VEC_SIZE>::Type;
   using Q_vec = typename Vec<scalar_t, VEC_SIZE>::Type;
   constexpr int NUM_ELEMS_PER_THREAD = HEAD_SIZE / THREAD_GROUP_SIZE; // 128/2 = 64
-  constexpr int NUM_VECS_PER_THREAD = NUM_ELEMS_PER_THREAD / VEC_SIZE; // 64/2 = 32 
+  constexpr int NUM_VECS_PER_THREAD = NUM_ELEMS_PER_THREAD / VEC_SIZE; // 64/4 = 16 
   const int thread_group_idx = thread_idx / THREAD_GROUP_SIZE; // 0, 0, 1, 1, ..., 63, 63 -- two elem keep a group
   const int thread_group_offset = thread_idx % THREAD_GROUP_SIZE;// 0, 1, 0, 1, ..., 0, 1 
   // Load the query to registers.
@@ -368,7 +369,16 @@ __global__ void xl_single_query_cached_kv_attention_kernel(
   Q_vec q_vecs[NUM_VECS_PER_THREAD]; 
 #pragma unroll
   for (int i = 0; i < NUM_VECS_PER_THREAD; i++) {
+    // 0, 1, 0, 1, ..., 0, 1 +  i (0, 1, 2, ..., 15) * 2
+    // 0, 1, 0, 1, ..., 0, 1  loop 0
+    // 2, 3, 2, 3, ..., 2, 3 loop 1
+    // ...
+    // 30, 31, 30, 31, ..., 30, 31 loop 15
     const int vec_idx = thread_group_offset + i * THREAD_GROUP_SIZE;
+    // 0, 4, 0, 4, ,..., 0, 4 loop 0
+    // 8, 12, 8, 12, ..., 8, 12 loop 1
+    // ...
+    // 30*4, 31*4, ..., 30*4, 31*4 loop 15
     q_vecs[i] = *reinterpret_cast<const Q_vec*>(q_ptr + vec_idx * VEC_SIZE);
     q_vecs[i] = add(q_vecs[i], *reinterpret_cast<const Q_vec*>(pos_bias_u_ptr + vec_idx * VEC_SIZE));
   }
@@ -378,23 +388,23 @@ __global__ void xl_single_query_cached_kv_attention_kernel(
   // NOTE(woosuk): We use FP32 for the softmax logits for better accuracy.
   float* logits = reinterpret_cast<float*>(shared_mem);
   // Workspace for reduction.
-  __shared__ float red_smem[2 * NUM_WARPS];
+  __shared__ float red_smem[2 * NUM_WARPS]; //red_smem[8]
 
   // x == THREAD_GROUP_SIZE * VEC_SIZE
   // Each thread group fetches x elements from the key at a time.
-  constexpr int x = 16 / sizeof(scalar_t);
+  constexpr int x = 16 / sizeof(scalar_t); // 16/2=8
   float qk_max = -FLT_MAX;
 
   const int* block_table = block_tables + seq_idx * max_num_blocks_per_seq;
   const int context_len = context_lens[seq_idx];
-  const int num_blocks = (context_len + BLOCK_SIZE - 1) / BLOCK_SIZE;
+  const int num_blocks = (context_len + BLOCK_SIZE - 1) / BLOCK_SIZE; //(context_len + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
   // Iterate over the key blocks.
   // Each warp fetches a block of keys for each iteration.
   // Each thread group in a warp fetches a key from the block, and computes
   // dot product with the query.
   for (int block_idx = warp_idx; block_idx < num_blocks; block_idx += NUM_WARPS) {
-    const int physical_block_number = block_table[block_idx];
+    const int physical_block_number = block_table[block_idx]; // different warp mapping to different block
 
     // Load a key to registers.
     // Each thread in a thread group has a different part of the key.
@@ -402,23 +412,57 @@ __global__ void xl_single_query_cached_kv_attention_kernel(
     // has 0, 4, 8, ... th vectors of the key, and the second thread has 1, 5, 9, ... th
     // vectors of the key, and so on.
     for (int i = 0; i < NUM_TOKENS_PER_THREAD_GROUP; i++) {
-      const int physical_block_offset = (thread_group_idx + i * WARP_SIZE) % BLOCK_SIZE;
+      //0, 0, 1, 1, ..., 15, 15 warp 0
+      //0, 0, 1, 1, ..., 15, 15 warp 1
+      //0, 0, 1, 1, ..., 15, 15 warp 2
+      //0, 0, 1, 1, ..., 15, 15 warp 3
+      const int physical_block_offset = (thread_group_idx + i * WARP_SIZE) % BLOCK_SIZE; 
       const int token_idx = block_idx * BLOCK_SIZE + physical_block_offset;
-      K_vec k_vecs[NUM_VECS_PER_THREAD];
+      K_vec k_vecs[NUM_VECS_PER_THREAD]; //k_vecs[16]
 
-#pragma unroll
+#pragma unroll // 32 loops
       for (int j = 0; j < NUM_VECS_PER_THREAD; j++) {
+        // base adderss + 
+        // 0, 0, 8, 8, ..., 15*8, 15*8  warp 0   different warp mapping to different block
+        // 0, 0, 8, 8, ..., 15*8, 15*8  warp 1
+        // 0, 0, 8, 8, ..., 15*8, 15*8  warp 2
+        // 0, 0, 8, 8, ..., 15*8, 15*8  warp 3
         const scalar_t* k_ptr = k_cache + physical_block_number * num_heads * HEAD_SIZE * BLOCK_SIZE
                                         + head_idx * HEAD_SIZE * BLOCK_SIZE
                                         + physical_block_offset * x;
+        // 0, 1, 0, 1, ..., 0,1  +  j(0, 1, ... , 31) * 2
+        // 0, 1, 0, 1, ..., 0,1        loop 0
+        // 2, 3, 2, 3, ..., 2,3        loop 1
+        // ...
+        // 30, 31, ..., 30, 31 loop 15
         const int vec_idx = thread_group_offset + j * THREAD_GROUP_SIZE;
+        // (vec_idx * 4) / 8;
+        // 0, 0, ... , 0 loop 0
+        // 1, 1, ... , 1 loop 1
+        // 2, 2, ... , 2 loop 2
+        // 3, 3, ... , 3 loop 3
+        // ... 
+        // 15, 15, ... , 15 loop 15
         const int offset1 = (vec_idx * VEC_SIZE) / x;
+        // (vec_idx * 4) % 8;
+        // 0, 4, ... , 0, 4 loop 0
+        // 0, 4, ... , 0, 4 loop 1
+        // 0, 4, ... , 0, 4 loop 2
+        // 0, 4, ... , 0, 4 loop 3
+        // ...
+        // 0, 4, ... , 0, 4 loop 15
         const int offset2 = (vec_idx * VEC_SIZE) % x;
+        // 0, 4, 8, 12, ..., 15*8, 15*8+4 loop 0
+        // 16*8, 16*8+4, ..., 31*8, 31*8+4 loop 1
+        // 32*8, 32*8+4, ..., 47*8, 47*8+4 loop 2
+        // ...
+        // 15*16*8, 15*16*8+4, ...,        loop 15
         k_vecs[j] = *reinterpret_cast<const K_vec*>(k_ptr + offset1 * BLOCK_SIZE * x + offset2);
       }
 
       // Compute dot product.
       // This includes a reduction across the threads in the same thread group.
+      // k_cache,   // [num_blocks, num_heads, head_size/x, block_size, x]
       const float qk = Qk_dot<scalar_t, THREAD_GROUP_SIZE>::dot(q_vecs, k_vecs);
       const bool mask = token_idx >= context_len;
     
