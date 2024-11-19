@@ -329,7 +329,7 @@ __global__ void xl_single_query_cached_kv_attention_kernel(
   const scalar_t* __restrict__ k_cache,   // [num_blocks, num_heads, head_size/x, block_size, x]
   const scalar_t* __restrict__ v_cache,   // [num_blocks, num_heads, head_size, block_size]
   const scalar_t* __restrict__ pos_bias_u, // [num_seqs, num_heads, head_size]
-  const scalar_t* __restrict__ matrix_bd, // [num_seqs, num_heads, head_size, block_size]
+  const scalar_t* __restrict__ matrix_bd, // [num_seqs, num_heads, block_size]
   const float scale,
   const int* __restrict__ block_tables,   // [num_seqs, max_num_blocks_per_seq]
   const int* __restrict__ context_lens,   // [num_seqs]
@@ -344,7 +344,7 @@ __global__ void xl_single_query_cached_kv_attention_kernel(
   const int lane = thread_idx % WARP_SIZE;// 0, 1 , 2 ..., 31,  0, 1 , 2 ..., 31,  0, 1 , 2 ..., 31,  0, 1 , 2 ..., 31  
   const int head_idx = blockIdx.x;  // 0, 1, 2, ..., 15
   const int num_heads = gridDim.x; // number of heads, assume dim is 2048, head size is 128, then num_heads is 16
-  const int seq_idx = blockIdx.y; // 0, 1, 2, ..., seq_len - 1
+  const int seq_idx = blockIdx.y; // 0, 1, 2, ..., num_seqs - 1
   // A vector type to store a part of a key or a query.
   // The vector size is configured in such a way that the threads in a thread group
   // fetch or compute 16 bytes at a time.
@@ -480,7 +480,12 @@ __global__ void xl_single_query_cached_kv_attention_kernel(
       // first .. loop reduce
       if (thread_group_offset == 0) {
         // add base offset, --> head idx
-        const scalar_t matrix_bd_val = matrix_bd[head_idx * HEAD_SIZE + token_idx];
+        // matrix_bd [num_seqs, num_heads, num_blocks, block_size]  -- [num_seqs, num_heads, context_len]
+        const int matrix_bd_seq_stride = seq_idx*num_heads*context_len;
+        const int matrix_bd_offset =  head_idx*context_len + block_idx*BLOCK_SIZE;
+        float matrix_bd_val = 0.f
+        if (block_idx*BLOCK_SIZE + token_idx < context_len)
+          matrix_bd_val = static_cast<float>(matrix_bd[matrix_bd_seq_stride + matrix_bd_offset + token_idx]);
         qk = scale * (static_cast<float>(matrix_bd_val) + qk)
         // Store the partial reductions to shared memory.
         // NOTE(woosuk): It is required to zero out the masked logits.
