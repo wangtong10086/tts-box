@@ -403,6 +403,9 @@ __global__ void xl_single_query_cached_kv_attention_kernel(
   // Each warp fetches a block of keys for each iteration.
   // Each thread group in a warp fetches a key from the block, and computes
   // dot product with the query.
+  // assume we have 8 tokens, then : 
+  // token 0 1 2 3 4 5 6 7
+  // warp  0 1 2 3 0 1 2 3
   for (int block_idx = warp_idx; block_idx < num_blocks; block_idx += NUM_WARPS) {
     const int physical_block_number = block_table[block_idx]; // different warp mapping to different block
 
@@ -417,6 +420,10 @@ __global__ void xl_single_query_cached_kv_attention_kernel(
       //0, 0, 1, 1, ..., 15, 15 warp 2
       //0, 0, 1, 1, ..., 15, 15 warp 3
       const int physical_block_offset = (thread_group_idx + i * WARP_SIZE) % BLOCK_SIZE; 
+      //0, 0, 1, 1, ..., 15, 15 warp 0
+      //16, 16, 17, 17, ..., 31, 31 warp 1
+      //32, 32, 33, 33, ..., 47, 47 warp 2
+      //48, 48, 49, 49, ..., 63, 63 warp 3
       const int token_idx = block_idx * BLOCK_SIZE + physical_block_offset;
       K_vec k_vecs[NUM_VECS_PER_THREAD]; //k_vecs[16]
 
@@ -463,24 +470,33 @@ __global__ void xl_single_query_cached_kv_attention_kernel(
       // Compute dot product.
       // This includes a reduction across the threads in the same thread group.
       // k_cache,   // [num_blocks, num_heads, head_size/x, block_size, x]
+      // we need concate by heda dim, so, k_vecs must cross block_size
+      // assume block_size is 16, x is 8, so, each date fetch need offset 16*8
       const float qk = Qk_dot<scalar_t, THREAD_GROUP_SIZE>::dot(q_vecs, k_vecs);
+      // when token_idx >= context_len, qk = 0
       const bool mask = token_idx >= context_len;
     
+      // two elem keep a group, get tid % 2 == 0, means first elem in group
+      // first .. loop reduce
       if (thread_group_offset == 0) {
-        const scalar_t matrix_bd_val = matrix_bd[token_idx];
+        // add base offset, --> head idx
+        const scalar_t matrix_bd_val = matrix_bd[head_idx * HEAD_SIZE + token_idx];
         qk = scale * (static_cast<float>(matrix_bd_val) + qk)
         // Store the partial reductions to shared memory.
         // NOTE(woosuk): It is required to zero out the masked logits.
         logits[token_idx] = mask ? 0.f : qk;
         // Update the max value.
+        // cross warp qk reduce.... eg token 0, 4, 8 ... reduce
         qk_max = mask ? qk_max : fmaxf(qk_max, qk);
       }
     }
   }
 
+  // second warp reduce
   // Perform reduction across the threads in the same warp to get the
   // max qk value for each "warp" (not across the thread block yet).
   // The 0-th thread of each thread group already has its max qk value.
+  // shfl mask: 0xffffffff
 #pragma unroll
   for (int mask = WARP_SIZE / 2; mask >= THREAD_GROUP_SIZE; mask /= 2) {
     qk_max = fmaxf(qk_max, __shfl_xor_sync(uint32_t(-1), qk_max, mask));
@@ -490,6 +506,7 @@ __global__ void xl_single_query_cached_kv_attention_kernel(
   }
   __syncthreads();
 
+  // third block reduce
   // TODO(woosuk): Refactor this part.
   // Get the max qk value for the sequence.
   qk_max = lane < NUM_WARPS ? red_smem[lane] : -FLT_MAX;
@@ -500,13 +517,14 @@ __global__ void xl_single_query_cached_kv_attention_kernel(
   // Broadcast the max qk value to all threads.
   qk_max = __shfl_sync(uint32_t(-1), qk_max, 0);
 
-  // Get the sum of the exp values.
+  // Get the sum of the exp values.  1. token loop reduce
   float exp_sum = 0.f;
   for (int i = thread_idx; i < context_len; i += NUM_THREADS) {
     float val = __expf(logits[i] - qk_max);
     logits[i] = val;
     exp_sum += val;
   }
+  // 2. sum of block loop reduce 
   exp_sum = block_sum<NUM_WARPS>(&red_smem[NUM_WARPS], exp_sum);
 
   // Compute softmax.
@@ -517,13 +535,17 @@ __global__ void xl_single_query_cached_kv_attention_kernel(
   __syncthreads();
 
   // Each thread will fetch 16 bytes from the value cache at a time.
+  // min(16/2, 16) = 8
   constexpr int V_VEC_SIZE = MIN(16 / sizeof(scalar_t), BLOCK_SIZE);
   using V_vec = typename Vec<scalar_t, V_VEC_SIZE>::Type;
   using L_vec = typename Vec<scalar_t, V_VEC_SIZE>::Type;
   using Float_L_vec = typename FloatVec<L_vec>::Type;
 
+  // 16/8 = 2
   constexpr int NUM_V_VECS_PER_ROW = BLOCK_SIZE / V_VEC_SIZE;
+  // 32/2 = 16
   constexpr int NUM_ROWS_PER_ITER = WARP_SIZE / NUM_V_VECS_PER_ROW;
+  // (128+16-1)/16 = 8
   constexpr int NUM_ROWS_PER_THREAD = (HEAD_SIZE + NUM_ROWS_PER_ITER - 1) / NUM_ROWS_PER_ITER;
 
   // NOTE(woosuk): We use FP32 for the accumulator for better accuracy.
@@ -534,20 +556,50 @@ __global__ void xl_single_query_cached_kv_attention_kernel(
   }
 
   for (int block_idx = warp_idx; block_idx < num_blocks; block_idx += NUM_WARPS) {
+    // shared one block table ?
     const int physical_block_number = block_table[block_idx];
+    // (0, 1,..., 31, 0,...31, 0,...,31, 0,...,31) % 2 * 8
+    // 0, 8, 0, 8, ..., 0, 8, 0, 8, ..., 0, 8, 0, 8, ..., 0, 8, 0, 8
     const int physical_block_offset = (lane % NUM_V_VECS_PER_ROW) * V_VEC_SIZE;
+    // 0, 8, 0, 8,...0, 8       warp 0
+    // 16, 24, 16, 24,...16, 24 warp 1
+    // 32, 40, 32, 40,...32, 40 warp 2
+    // 48, 56, 48, 56,...48, 56 warp 3
     const int token_idx = block_idx * BLOCK_SIZE + physical_block_offset;
+    // different qk, l_vec one thread take a vector
     L_vec logits_vec;
     from_float(logits_vec, *reinterpret_cast<Float_L_vec*>(logits + token_idx));
 
     const scalar_t* v_ptr = v_cache + physical_block_number * num_heads * HEAD_SIZE * BLOCK_SIZE
                                     + head_idx * HEAD_SIZE * BLOCK_SIZE;
-#pragma unroll
+#pragma unroll // 8 loops 
     for (int i = 0; i < NUM_ROWS_PER_THREAD; i++) {
+      // lane / 2 + i * 16
+      // 0, 0, ..., 15, 15 ... 0, 0, ..., 15, 15 ... loop 0
+      // 16, 16, ..., 31, 31 ... 16, 16, ..., 31, 31 ... loop 1
+      // ...
+      // 112, 112, ..., 127, 127 ... 112, 112, ..., 127, 127 ... loop 7
       const int row_idx = lane / NUM_V_VECS_PER_ROW + i * NUM_ROWS_PER_ITER;
       if (row_idx < HEAD_SIZE) {
+        // 0, 8, 16, 24, ... 15*16, 15*16+8 ...  loop 0  
+        // 16*16, 16*16+8, 17*16, 17*16+8, ... 31*16, 31*16+8 ...  loop 1
+        // ...
+        // 112*16, 112*16+8, 113*16, 113*16+8, ... 127*16, 127*16+8 ...  loop 7
         const int offset = row_idx * BLOCK_SIZE + physical_block_offset;
         V_vec v_vec = *reinterpret_cast<const V_vec*>(v_ptr + offset);
+        // v_cache [num_blocks, num_heads, head_size, block_size]
+        // q*k == 1*head_size x head_size*num_tokens == 1*num_tokens
+        // l*v == 1*num_tokens x num_tokens*head_size == 1*head_size
+        //   0 .... 16
+        // 0
+        // .
+        // .
+        // .
+        // 128
+        // vec size is 8, warp loop time = 128 * 16 / (8*32) = 8 
+        // due cross token warp, so need use add
+        // 0, .. 15, 16, ... , 31,  32, ..., 47, 48, ... ,63  block_idx loop 0
+        // 64, ..,79                                          block_idx loop 1
         accs[i] += dot(logits_vec, v_vec);
       }
     }
@@ -557,7 +609,7 @@ __global__ void xl_single_query_cached_kv_attention_kernel(
 #pragma unroll
   for (int i = 0; i < NUM_ROWS_PER_THREAD; i++) {
     float acc = accs[i];
-#pragma unroll
+#pragma unroll // do row reduce, due to once calc 8 number dot, we have 16 tokens in one row
     for (int mask = NUM_V_VECS_PER_ROW / 2; mask >= 1; mask /= 2) {
       acc += __shfl_xor_sync(uint32_t(-1), acc, mask);
     }
@@ -571,14 +623,23 @@ __global__ void xl_single_query_cached_kv_attention_kernel(
   // Perform reduction across warps.
   float* out_smem = reinterpret_cast<float*>(shared_mem);
 #pragma unroll
-  for (int i = NUM_WARPS; i > 1; i /= 2) {
-    int mid = i / 2;
+  for (int i = NUM_WARPS; i > 1; i /= 2) { // NUM_WARPS 4
+    int mid = i / 2; // 2, 1 loop 2 times, separately reduce warp 2,3, and warp 1
     // Upper warps write to shared memory.
-    if (warp_idx >= mid && warp_idx < i) {
+    if (warp_idx >= mid && warp_idx < i) { // warp 2, 3 selected
+      // (warp_idx - mid) * HEAD_SIZE -- > 0*128, 1*128
       float* dst = &out_smem[(warp_idx - mid) * HEAD_SIZE];
 #pragma unroll
-      for (int i = 0; i < NUM_ROWS_PER_THREAD; i++) {
+      for (int i = 0; i < NUM_ROWS_PER_THREAD; i++) { // 8 loops
+        // (0, 1, 2, ..., 31) /2  + i * 16
+        // 0, 0, ..., 15, 15       loop 0
+        // 16, 16, ..., 31, 31     loop 1
+        // ...
+        // 112, 112, ..., 127, 127 loop 7
         const int row_idx = lane / NUM_V_VECS_PER_ROW + i * NUM_ROWS_PER_ITER;
+        // select thread group 0
+        // 0, 1, 2, ... , 127  --row_idx
+        // 0, 1, 2, ... , 127  --token idx
         if (row_idx < HEAD_SIZE && lane % NUM_V_VECS_PER_ROW == 0) {
           dst[row_idx] = accs[i];
         }
@@ -587,6 +648,8 @@ __global__ void xl_single_query_cached_kv_attention_kernel(
     __syncthreads();
 
     // Lower warps update the output.
+    // cross warp reduce
+    // add warp 2, 3 to warp 0, 1
     if (warp_idx < mid) {
       const float* src = &out_smem[warp_idx * HEAD_SIZE];
 #pragma unroll
