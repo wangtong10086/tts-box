@@ -91,17 +91,30 @@ class PageTableManager:
         self.page_map[page_id] = page_idx
         return page_idx
     
-    def hash_block(self, block_token_idx: List[str]) -> str:
-        return '#'.join(block_token_idx)
+    def hash_block(self, block_token_idx: List[str], block_token_pos: List[str]) -> str:
+        hashed_block_token_pos = '#'.join(block_token_pos)
+        return '#'.join(block_token_idx)+"@"+hashed_block_token_pos
 
     def replace_first_masked_position(self, logical_id: str, token_id: int) -> Tuple[str, int]:
-        parts = logical_id.split('#')
-        first_masked_pos = parts.index('M')
-        parts[first_masked_pos] = str(token_id)
-        return '#'.join(parts), first_masked_pos
-    
+        # 将字符串分成两部分
+        part1, part2 = logical_id.split('@')
+        
+        # 处理前一部分
+        parts = part1.split('#')
+        if 'M' in parts:
+            first_masked_pos = parts.index('M')  # 找到 'M' 的位置
+            parts[first_masked_pos] = str(token_id)  # 替换 'M' 为 token_id
+            part1 = '#'.join(parts)  # 更新前一部分
+        else:
+            raise ValueError("No masked position ('M') found in the first part of the logical_id")
+        
+        # 拼接处理后的部分和未处理的后部分
+        updated_logical_id = f"{part1}@{part2}"
+        return updated_logical_id, first_masked_pos
+
     def get_cached_pages(self):
         return self.page_pool
+    
     def prefill(self, token_idx_list: list, data: torch.Tensor = None):
         """
         预填充页面池，根据 token_idx_list 划分块并将数据填充到页面中。
@@ -128,7 +141,8 @@ class PageTableManager:
 
         # 为每个块分配页面并填充
         for idx, block in enumerate(blocks):
-            logical_page_id = self.hash_block(block)
+            block_token_pos = [str(i) for i in range(idx*self.block_size, idx*self.block_size+self.block_size)]
+            logical_page_id = self.hash_block(block, block_token_pos)
             mask_count = logical_page_id.count('M')
             if 'M' in logical_page_id:
                 self.remain_pages.append(logical_page_id)
@@ -155,7 +169,7 @@ class PageTableManager:
             new_page_id, first_masked_pos = self.replace_first_masked_position(logical_remain_page_id, current_token_id)
             # 找到当前物理页id
             physical_current_page_id = self.page_map[logical_remain_page_id]
-            # 是否已经有对应的page -- 如果有, 直接复用
+            # 是否已经有对应的page -- 如果有, 直接复用, 在共享prompt和parallel sampling中，可能会出现该情况 
             if new_page_id in self.page_map:
                 # 找到更新的物理页
                 physical_update_page_id = self.page_map[new_page_id]
@@ -193,7 +207,9 @@ class PageTableManager:
         else: # 如果没有，表示所有的物理页均已填满，要重新申请一个物理页
             # 设置新申请物理页的逻辑页id
             current_block_id = [str(current_token_id)] + ['M'] * (self.block_size - 1)
-            logical_page_id = self.hash_block(current_block_id)
+            # 当前的token所处位置减一，一定可以整除block_size
+            block_token_pos = [str(i) for i in range(len(block_token_idx)-1, len(block_token_idx)-1+self.block_size)]
+            logical_page_id = self.hash_block(current_block_id, block_token_pos)
 
             # 将对应的逻辑页追加到remain_pages中去
             if 'M' in logical_page_id:
@@ -256,7 +272,7 @@ def test_decode_fill_page():
 
     print(manager.sequence_page_table)
     
-    logical_page_id, _ = manager.replace_first_masked_position("5#M", 6)
+    logical_page_id = "5#6@4#5"
     physical_page_idx = manager.page_map.get(logical_page_id, -1)
     
     assert physical_page_idx != -1, "Decode failed: No allocated page for new token."
@@ -280,11 +296,11 @@ def test_decode_reuse():
     manager.decode(token_idx_list, data=token_data)
     print(manager.sequence_page_table)
     
-    logical_page_id, _ = manager.replace_first_masked_position("3#M", 4)
+    logical_page_id = "3#4@4#5"
     physical_page_idx = manager.page_map.get(logical_page_id, -1)
     
     assert physical_page_idx != -1, "Decode reuse failed: No valid page allocated."
-    assert 2 in manager.free_page_queue.free_page_queue, "Decode reuse failed: Expected page not reused."
+    assert 2 not in manager.free_page_queue.free_page_queue, "Decode reuse failed: Expected 2 not in manager.free_page_queue.free_page_queue."
     assert (manager.page_pool[physical_page_idx, 1] == token_data).all(), "Decode failed: Data mismatch on decoded page"
     print("Decode reuse test passed.")
 
@@ -306,7 +322,7 @@ def test_decode_new_page():
     manager.decode(token_idx_list, data=token_data)
     print(manager.sequence_page_table)
 
-    logical_page_id, _ = manager.replace_first_masked_position("M#M", 5)
+    logical_page_id = "5#M@4#5"
     physical_page_idx = manager.page_map.get(logical_page_id, -1)
     
     assert physical_page_idx != -1, "Decode failed: No valid page allocated."
