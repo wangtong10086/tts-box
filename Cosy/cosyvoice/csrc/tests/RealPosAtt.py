@@ -357,14 +357,11 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         key_cache = torch.squeeze(key_cache, dim=0).transpose(0, 1)   # [16, 10, 64]  -- > [10, 16, 64] 
         value_cache = torch.squeeze(value_cache, dim=0).transpose(0, 1)   # [16, 10, 64] -- > [10, 16, 64] 
         
-        key_cache_manger = PageTableManager(block_size=block_size, num_head=num_heads, headsize=head_size,
-                                       initial_pages=16, max_pages=512, dtype=query.dtype)
-        value_cache_manger = PageTableManager(block_size=block_size, num_head=num_heads, headsize=head_size,
-                                       initial_pages=16, max_pages=512, dtype=query.dtype)
+        x_factor = 8
+        cache_manger = PageTableManager(block_size=block_size, num_head=num_heads, headsize=head_size,
+                                       initial_pages=16, max_pages=512, dtype=query.dtype, x_factor=x_factor)
         
-        key_cache_manger.prefill(kv_indices, key_cache)
-        value_cache_manger.prefill(kv_indices, value_cache)
-        
+        cache_manger.prefill(kv_indices, key_cache, value_cache)
     
         q, k, v = self.forward_qkv(query, key, value)
         q = q.transpose(1, 2)  # [1, 1, 16, 64]
@@ -373,11 +370,9 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         v = torch.squeeze(v, dim=0) # [1, 16, 64]
         
         kv_indices.append(kv_current_index)
-        key_cache_manger.decode(kv_indices, k)
-        value_cache_manger.decode(kv_indices, v)
+        cache_manger.decode(kv_indices, k, v)
         
-        key_cache = key_cache_manger.get_cached_pages()
-        value_cache = value_cache_manger.get_cached_pages()
+        key_cache, value_cache = cache_manger.get_cached_pages()
         
         qk_shape = (1, num_heads, key_cache.size(0)+1)
         
@@ -397,7 +392,7 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         context_lens = torch.tensor(context_lens, dtype=torch.int, device='cuda')
         
         # 同一个sequence下： key_cache 和 value_cache 的 block_table是相同的 
-        block_table = key_cache_manger.sequence_page_table
+        block_table = cache_manger.sequence_page_table
         
         block_tables.append(block_table)
         block_tables = torch.tensor(block_tables, dtype=torch.int, device='cuda')
