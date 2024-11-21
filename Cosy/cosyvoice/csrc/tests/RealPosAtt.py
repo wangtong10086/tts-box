@@ -388,7 +388,7 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         matrix_bd = torch.matmul(q_with_bias_v, p) # [1, 16, 21]
         
         if qk_shape != matrix_bd.shape:
-            matrix_bd = self.rel_shift(matrix_bd) # [1, 16, 11]
+            matrix_bd = self.rel_shift(matrix_bd) # [1, 16, 11] <--> [num_seqs, num_heads, context_len]
         
         scale = float(1.0 / (head_size ** 0.5))
         
@@ -396,6 +396,7 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         max_context_len = max(context_lens)
         context_lens = torch.tensor(context_lens, dtype=torch.int, device='cuda')
         
+        # 同一个sequence下： key_cache 和 value_cache 的 block_table是相同的 
         block_table = key_cache_manger.sequence_page_table
         
         block_tables.append(block_table)

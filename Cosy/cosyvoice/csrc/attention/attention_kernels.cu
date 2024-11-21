@@ -486,7 +486,7 @@ __global__ void xl_single_query_cached_kv_attention_kernel(
         float matrix_bd_val = 0.f
         if (block_idx*BLOCK_SIZE + token_idx < context_len)
           matrix_bd_val = static_cast<float>(matrix_bd[matrix_bd_seq_stride + matrix_bd_offset + token_idx]);
-        qk = scale * (static_cast<float>(matrix_bd_val) + qk)
+        qk = scale * (matrix_bd_val + qk)
         // Store the partial reductions to shared memory.
         // NOTE(woosuk): It is required to zero out the masked logits.
         logits[token_idx] = mask ? 0.f : qk;

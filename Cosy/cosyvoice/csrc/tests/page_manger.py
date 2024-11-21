@@ -31,10 +31,12 @@ class PageTableManager:
         self.dtype = dtype
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-        # 页面池
-        self.page_pool = torch.zeros((self.current_capacity, self.block_size, self.num_head, self.headsize), 
-                                      device=self.device, 
-                                      dtype=self.dtype)
+        # 页面池，初始化存储 k_cache 和 v_cache 的数据
+        self.k_cache_pool = torch.zeros((self.current_capacity, self.num_head, self.headsize // self.x_factor, self.block_size, self.x_factor),
+                                        device=self.device, dtype=self.dtype)
+        self.v_cache_pool = torch.zeros((self.current_capacity, self.num_head, self.headsize, self.block_size),
+                                        device=self.device, dtype=self.dtype)
+        
         # 物理页的引用计数，初始时为0
         self.page_usage = [0] * self.current_capacity
         # 虚拟页--物理也映射表
@@ -57,11 +59,14 @@ class PageTableManager:
         new_capacity = min(self.current_capacity + expansion_step, self.max_pages)
         additional_pages = new_capacity - self.current_capacity
 
-        # 扩展页面池和页面使用跟踪数组
-        new_pages = torch.zeros((additional_pages, self.block_size, self.num_head, self.headsize), 
-                        device=self.device, 
-                        dtype=self.dtype)
-        self.page_pool = torch.cat((self.page_pool, new_pages), dim=0)
+        # 扩展 k_cache 和 v_cache 的页面池
+        new_k_cache_pages = torch.zeros((additional_pages, self.num_head, self.headsize // self.x_factor, self.block_size, self.x_factor),
+                                        device=self.device, dtype=self.dtype)
+        new_v_cache_pages = torch.zeros((additional_pages, self.num_head, self.headsize, self.block_size),
+                                        device=self.device, dtype=self.dtype)
+        self.k_cache_pool = torch.cat((self.k_cache_pool, new_k_cache_pages), dim=0)
+        self.v_cache_pool = torch.cat((self.v_cache_pool, new_v_cache_pages), dim=0)
+
         
         self.page_usage.extend([0] * additional_pages)
         self.free_page_queue.batch_enqueue_right(range(self.current_capacity, new_capacity))
@@ -115,22 +120,23 @@ class PageTableManager:
     def get_cached_pages(self):
         return self.page_pool
     
-    def prefill(self, token_idx_list: list, data: torch.Tensor = None):
+    def prefill(self, token_idx_list: list, k_data: torch.Tensor, v_data: torch.Tensor):
         """
         预填充页面池，根据 token_idx_list 划分块并将数据填充到页面中。
         映射表 str(token_idx_list) -- > 物理块id
         Args:
             token_idx_list (list): 要处理的 token 索引列表。
             data (Tensor): 形状为 [b, seq_len, num_head, head_size] 的数据张量，用于填充页面池中的相应块。
-        
+        # q : 为什么不以块的为单位进行重用，因为有位置编码，如果把位置编码融合进attention kernel中呢
         """
-        assert data is not None, "data must be provided for prefill"
-        
-        b, seq_len, num_head, head_size = data.shape
-        
+        assert k_data is not None and v_data is not None, "k_data and v_data must be provided for prefill"
+        b, seq_len, num_head, head_size = k_data.shape
+        b_v, seq_len_v, num_head_v, head_size_v = v_data.shape
         assert b == 1, "Only support batch size of 1 for prefill"
+        assert (b==b_v) & (seq_len==seq_len_v) & (num_head==num_head_v) & (head_size==head_size_v), "k, v shape mush same"
         
-        data = data.reshape(b*seq_len, num_head, head_size)
+        k_data = k_data.view(num_head, head_size // self.x_factor, seq_len, self.x_factor)
+        v_data = v_data.view(num_head, head_size, seq_len)
         
         # 划分 token_idx_list 为多个小块
         blocks = [list(map(str, token_idx_list[i:i + self.block_size])) for i in range(0, len(token_idx_list), self.block_size)]
@@ -153,12 +159,20 @@ class PageTableManager:
             self.sequence_page_table.extend([physical_page_idx] * fill_token_size)
             # 对于每个块中的每个 token_idx，从 data 中提取对应的 token embedding
             start_pos = idx * self.block_size
-            end_pos = min(start_pos + self.block_size, data.size(0))
-            self.page_pool[physical_page_idx, 0:end_pos-start_pos, :, :] = data[start_pos:end_pos, :, :]
-            
+            end_pos = min(start_pos + self.block_size, seq_len)
+            self.k_cache_pool[physical_page_idx, :, :, :end_pos-start_pos, :] = k_data[:, :, start_pos:end_pos, :]
+            self.v_cache_pool[physical_page_idx, :, :, :end_pos-start_pos] = v_data[:, :, start_pos:end_pos]
     
-    def decode(self, block_token_idx:List[int], data:torch.Tensor=None):
-        assert data is not None, "data must be provided for decode"
+    def decode(self, block_token_idx:List[int], k_data: torch.Tensor, v_data: torch.Tensor):
+        assert k_data is not None and v_data is not None, "data must be provided for decode"
+        b, seq_len, num_head, head_size = k_data.shape
+        b_v, seq_len_v, num_head_v, head_size_v = v_data.shape
+        assert b == 1 and seq_len==1, "Only support batch size of 1 for prefill"
+        assert (b==b_v) & (seq_len==seq_len_v) & (num_head==num_head_v) & (head_size==head_size_v), "k, v shape mush same"
+        
+        k_data = k_data.view(num_head, head_size // self.x_factor, seq_len, self.x_factor)
+        v_data = v_data.view(num_head, head_size, seq_len)
+        
         current_token_id = block_token_idx[-1]
         # 如果有未填满的page
         if self.remain_pages:
@@ -195,7 +209,8 @@ class PageTableManager:
                    del self.remain_pages[0]
             else: # 如果没有, 往未填满的page中插入
                 # 将数据插入page pool对应的位置当中
-                self.page_pool[self.page_map[logical_remain_page_id], first_masked_pos, :, :] = data
+                self.k_cache_pool[self.page_map[logical_remain_page_id], :, :, first_masked_pos, :] = k_data
+                self.v_cache_pool[self.page_map[logical_remain_page_id], :, :, first_masked_pos] = v_data
                 # 删除旧的逻辑页面id -- 物理页id映射，因为逻辑页面id要更换
                 del self.page_map[logical_remain_page_id]
                 # 更新逻辑页id的映射
@@ -219,7 +234,8 @@ class PageTableManager:
             if physical_page_idx == -1:
                 raise ValueError("Allocate memory out of max page size, Failed to allocate page for block:", physical_page_idx)
             # 将数据插入page pool对应的位置当中
-            self.page_pool[physical_page_idx, 0, :, :] = data 
+            self.k_cache_pool[physical_page_idx, :, :, 0, :] = k_data
+            self.v_cache_pool[physical_page_idx, :, :, 0] = v_data
             self.sequence_page_table.append(physical_page_idx)
             
 
