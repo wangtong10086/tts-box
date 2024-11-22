@@ -3,6 +3,19 @@
 
 namespace vllm {
 
+/*
+dim3 grid(num_tokens);
+// 一个block中的线程数在num_heads * rot_dim / 2 和 512 之间 权衡
+// 一个block处理一个token
+dim3 block(std::min(num_heads * rot_dim / 2, 512));
+
+assume:
+positions: [512]
+query: [512, 1024] --> [512, 8, 128]
+key: [512, 1024] --> [512, 8, 128]
+cos_sin_cache: [512, 128]    rot_dim == head_size
+
+*/
 template<typename scalar_t>
 __global__ void rotary_embedding_neox_kernel(
   const int64_t* __restrict__ positions,        // [num_tokens]
@@ -18,27 +31,36 @@ __global__ void rotary_embedding_neox_kernel(
   int64_t pos = positions[token_idx];
   const scalar_t* cache_ptr = cos_sin_cache + pos * rot_dim;
 
-  const int embed_dim = rot_dim / 2;
-  const int n = num_heads * embed_dim;
+  const int embed_dim = rot_dim / 2; //64
+  const int n = num_heads * embed_dim; //1024
   for (int i = threadIdx.x; i < n; i += blockDim.x) {
+    //0, ..., 0, 1,...,1, ..., 7,...,7 two warp keep a group
     const int head_idx = i / embed_dim;
     const int token_head = token_idx * stride + head_idx * head_size;
 
+    //0,...,31,32...,63 ... 0,...,63, ... 0,...,63, 0,...,63 two warp keep a group
     const int rot_offset = i % embed_dim;
+    //0,...,31,32...,63 ... 0,...,63, ... 0,...,63, 0,...,63 two warp keep a group
     const int x_index = rot_offset;
+    //64,...95,96,...127, ... 64,...95,96,...127, ... 64,...95,96,...127, 64,...95,96,...127,
     const int y_index = embed_dim + rot_offset;
 
     const int out_x = token_idx * stride + head_idx * head_size + x_index;
     const int out_y = token_idx * stride + head_idx * head_size + y_index;
 
+    // cache 中，一半的内容存cos，一半的内容存sin, eg , rot_dim 是128
+    // 那么前64个是cos，后64个是sin
     const scalar_t cos = __ldg(cache_ptr + x_index);
     const scalar_t sin = __ldg(cache_ptr + y_index);
 
+    // 对于q，一个head 分开取 head_dim 是128
+    // 那么前64个到q_x，后64个到q_y
     const scalar_t q_x = query[token_head + x_index];
     const scalar_t q_y = query[token_head + y_index];
     query[out_x] = q_x * cos - q_y * sin;
     query[out_y] = q_y * cos + q_x * sin;
 
+    // key 和 q 保持同理
     const scalar_t k_x = key[token_head + x_index];
     const scalar_t k_y = key[token_head + y_index];
     key[out_x] = k_x * cos - k_y * sin;
@@ -58,10 +80,12 @@ void rotary_embedding_neox(
   int num_tokens = query.size(0);
   int rot_dim = cos_sin_cache.size(1);
   int num_heads = query.size(1) / head_size;
-  int stride = query.stride(0);
+  int stride = query.stride(0); // num_heads * head_size
   TORCH_CHECK(stride == key.stride(0));
 
   dim3 grid(num_tokens);
+  // 一个block中的线程数在num_heads * rot_dim / 2 和 512 之间 权衡
+  // 一个block处理一个token
   dim3 block(std::min(num_heads * rot_dim / 2, 512));
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
   AT_DISPATCH_FLOATING_TYPES_AND2(

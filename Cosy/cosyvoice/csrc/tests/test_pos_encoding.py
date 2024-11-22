@@ -75,6 +75,14 @@ class RefRotaryEmbeddingNeox(nn.Module):
         return query, key
 
 
+'''
+num_tokens=2145,
+num_heads=5,
+head_size=head_size,
+max_position=8192,
+rotary_dim=head_size,
+dtype=dtype,
+'''
 @torch.inference_mode()
 def run_rotary_embedding_neox(
     num_tokens: int,
