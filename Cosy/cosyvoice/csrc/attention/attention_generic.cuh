@@ -43,9 +43,6 @@ template<typename T>
 inline __device__ T add(T a, T b);
 
 template<typename T>
-inline __device__ T vec_div_scalar(T a, T b);
-
-template<typename T>
 inline __device__ float dot(T a, T b) {
   return sum(mul<T, T, T>(a, b));
 }
@@ -72,59 +69,18 @@ inline __device__ void zero(T& dst) {
 
 
 template <typename T>
-struct ComputeSqrt {
-    inline static __device__ T compute(float value) {
-        static_assert(sizeof(T) == 0, "Unsupported type");
-        return T(); 
-    }
-
-    inline static __device__ T compute(int value) {
-        return compute(static_cast<float>(value));
-    }
-};
+inline __device__ float to_float(const T& value) {
+    return static_cast<float>(value);
+}
 
 template <>
-struct ComputeSqrt<__nv_bfloat16> {
-    inline static __device__ __nv_bfloat16 compute(float value) {
-        return __float2bfloat16(sqrtf(value));
-    }
-
-    inline static __device__ __nv_bfloat16 compute(int value) {
-        return compute(static_cast<float>(value));
-    }
-};
+inline __device__ float to_float(const __nv_bfloat16& value) {
+    return __bfloat162float(value);
+}
 
 template <>
-struct ComputeSqrt<__half> {
-    inline static __device__ __half compute(float value) {
-        return __float2half(sqrtf(value));
-    }
-
-    inline static __device__ __half compute(int value) {
-        return compute(static_cast<float>(value));
-    }
-};
-
-template <>
-struct ComputeSqrt<float> {
-    inline static __device__ float compute(float value) {
-        return sqrtf(value);
-    }
-
-    inline static __device__ float compute(int value) {
-        return compute(static_cast<float>(value));
-    }
-};
-
-template <>
-struct ComputeSqrt<uint16_t> {
-    inline static __device__ uint16_t compute(float value) {
-        return static_cast<uint16_t>(sqrtf(value));
-    }
-
-    inline static __device__ uint16_t compute(int value) {
-        return compute(static_cast<float>(value));
-    }
-};
+inline __device__ float to_float(const __half& value) {
+    return __half2float(value);
+}
 
 } // namespace vllm

@@ -472,7 +472,7 @@ __global__ void xl_single_query_cached_kv_attention_kernel(
       // k_cache,   // [num_blocks, num_heads, head_size/x, block_size, x]
       // we need concate by heda dim, so, k_vecs must cross block_size
       // assume block_size is 16, x is 8, so, each date fetch need offset 16*8
-      const float qk = Qk_dot<scalar_t, THREAD_GROUP_SIZE>::dot(q_vecs, k_vecs);
+      float qk = scale*Qk_dot<scalar_t, THREAD_GROUP_SIZE>::dot(q_vecs, k_vecs);
       // when token_idx >= context_len, qk = 0
       const bool mask = token_idx >= context_len;
     
@@ -483,10 +483,10 @@ __global__ void xl_single_query_cached_kv_attention_kernel(
         // matrix_bd [num_seqs, num_heads, num_blocks, block_size]  -- [num_seqs, num_heads, context_len]
         const int matrix_bd_seq_stride = seq_idx*num_heads*context_len;
         const int matrix_bd_offset =  head_idx*context_len + block_idx*BLOCK_SIZE;
-        float matrix_bd_val = 0.f
-        if (block_idx*BLOCK_SIZE + token_idx < context_len)
-          matrix_bd_val = static_cast<float>(matrix_bd[matrix_bd_seq_stride + matrix_bd_offset + token_idx]);
-        qk = scale * (matrix_bd_val + qk)
+        if (block_idx*BLOCK_SIZE + token_idx < context_len){
+          scalar_t matrix_bd_val = matrix_bd[matrix_bd_seq_stride + matrix_bd_offset + token_idx];
+          qk += scale*to_float(matrix_bd_val);
+        }
         // Store the partial reductions to shared memory.
         // NOTE(woosuk): It is required to zero out the masked logits.
         logits[token_idx] = mask ? 0.f : qk;

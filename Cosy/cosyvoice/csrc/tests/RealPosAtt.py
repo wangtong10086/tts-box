@@ -292,46 +292,46 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         if key_cache.size(0) > 0:
             k = torch.cat([key_cache, k], dim=2)
             v = torch.cat([value_cache, v], dim=2)
-        print("k.shape: ", k.shape) # torch.Size([1, 16, 11, 64])
-        print("v.shape: ", v.shape)
+        #print("k.shape: ", k.shape) # torch.Size([1, 16, 11, 64])
+        #print("v.shape: ", v.shape)
         # NOTE(xcsong): We do cache slicing in encoder.forward_chunk, since it's
         #   non-trivial to calculate `next_cache_start` here.
 
         n_batch_pos = pos_emb.size(0)
         p = self.linear_pos(pos_emb).view(n_batch_pos, -1, self.h, self.d_k)
-        print("p: ", p.shape)
+        #print("p: ", p.shape)
         p = p.transpose(1, 2)  # (batch, head, time1, d_k)
         
 
         # (batch, head, time1, d_k)
-        print("shape info")
-        print("q: ", q.shape)
-        print(self.pos_bias_u.shape)
-        print("self.pos_bias_v: ", self.pos_bias_v.shape)
-        print("self.pos_bias_u.shape: ", self.pos_bias_u.shape)
+        #print("shape info")
+        #print("q: ", q.shape)
+        #print(self.pos_bias_u.shape)
+        #print("self.pos_bias_v: ", self.pos_bias_v.shape)
+        #print("self.pos_bias_u.shape: ", self.pos_bias_u.shape)
         q_with_bias_u = (q + self.pos_bias_u).transpose(1, 2)
-        print("q_with_bias_u.shape: ", q_with_bias_u.shape)  # [1, 16, 1, 64]
+        #print("q_with_bias_u.shape: ", q_with_bias_u.shape)  # [1, 16, 1, 64]
         # (batch, head, time1, d_k)
         q_with_bias_v = (q + self.pos_bias_v).transpose(1, 2)
-        print("q_with_bias_v.shape: ", q_with_bias_v.shape)
+        #print("q_with_bias_v.shape: ", q_with_bias_v.shape)
 
         # compute attention score
         # first compute matrix a and matrix c
         # as described in https://arxiv.org/abs/1901.02860 Section 3.3
         # (batch, head, time1, time2)
         matrix_ac = torch.matmul(q_with_bias_u, k.transpose(-2, -1))
-        print("matrix_ac: ", matrix_ac.shape) # [1, 16, 1, 11]
+        #print("matrix_ac: ", matrix_ac.shape) # [1, 16, 1, 11]
 
         # compute matrix b and matrix d
         # (batch, head, time1, time2)
         matrix_bd = torch.matmul(q_with_bias_v, p.transpose(-2, -1))  # do out of cuda kernel
         
-        print("matrix_bd: ", matrix_bd.shape) # [1, 16, 1, 1]
+        #print("matrix_bd: ", matrix_bd.shape) # [1, 16, 1, 1]
         # NOTE(Xiang Lyu): Keep rel_shift since espnet rel_pos_emb is used
         if matrix_ac.shape != matrix_bd.shape:   # do out of cuda kernel
             matrix_bd = self.rel_shift(matrix_bd)
 
-        print("matrix_bd: ", matrix_bd.shape)
+        #print("matrix_bd: ", matrix_bd.shape)
         scores = (matrix_ac + matrix_bd) / math.sqrt(
             self.d_k)  # (batch, head, time1, time2)
 
@@ -342,8 +342,8 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         self,
         num_heads: int,
         head_size: int,
-        query_index: int,
         kv_current_index: int,
+        num_tokens: int,
         kv_indices: list,
         query: torch.Tensor,
         key: torch.Tensor,
@@ -354,8 +354,8 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         
         block_size = 16
-        key_cache = torch.squeeze(key_cache, dim=0).transpose(0, 1)   # [16, 10, 64]  -- > [10, 16, 64] 
-        value_cache = torch.squeeze(value_cache, dim=0).transpose(0, 1)   # [16, 10, 64] -- > [10, 16, 64] 
+        key_cache = key_cache.transpose(0, 1)   # [1, 16, 10, 64]  -- > [1, 10, 16, 64] 
+        value_cache = value_cache.transpose(0, 1)   # [1, 16, 10, 64] -- > [1, 10, 16, 64] 
         
         x_factor = 8
         cache_manger = PageTableManager(block_size=block_size, num_head=num_heads, headsize=head_size,
@@ -365,16 +365,14 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
     
         q, k, v = self.forward_qkv(query, key, value)
         q = q.transpose(1, 2)  # [1, 1, 16, 64]
-        q = torch.squeeze(q, dim=0) # [1, 16, 64]
-        k = torch.squeeze(k, dim=0) # [1, 16, 64]
-        v = torch.squeeze(v, dim=0) # [1, 16, 64]
+        q = torch.squeeze(q, dim=1) # [1, 16, 64]
         
         kv_indices.append(kv_current_index)
         cache_manger.decode(kv_indices, k, v)
         
         key_cache, value_cache = cache_manger.get_cached_pages()
         
-        qk_shape = (1, num_heads, key_cache.size(0)+1)
+        qk_shape = (1, num_heads, num_tokens)
         
         q_with_bias_v = (q + self.pos_bias_v) #[1, 16, 64]
         n_batch_pos = pos_emb.size(0)
@@ -387,13 +385,14 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         
         scale = float(1.0 / (head_size ** 0.5))
         
-        context_lens = [key_cache.size(0)+1] # 生成一个长度为 num_tokens 的列表 context_lens，每个元素都是从 1 到 MAX_SEQ_LEN 之间的随机整数
+        context_lens = [num_tokens] # 生成一个长度为 num_tokens 的列表 context_lens，每个元素都是从 1 到 MAX_SEQ_LEN 之间的随机整数
         max_context_len = max(context_lens)
         context_lens = torch.tensor(context_lens, dtype=torch.int, device='cuda')
         
         # 同一个sequence下： key_cache 和 value_cache 的 block_table是相同的 
         block_table = cache_manger.sequence_page_table
         
+        block_tables = []
         block_tables.append(block_table)
         block_tables = torch.tensor(block_tables, dtype=torch.int, device='cuda')
         
@@ -419,19 +418,23 @@ def make_vocab(vocab_size, embedding_dim, device, dtype):
     return embeddings
       
         
-    
-
 def test_att():
+    
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    print(f"device:{device}")
     
     # 设置随机种子
     torch.manual_seed(1999)
     
     dtype = torch.float32
     
-    embeddings = make_vocab(vocab_size=5000, embedding_dim=1024, device='cuda', dtype=dtype)
+    vocab_size=5000
+    embedding_dim=1024
+    
+    embeddings = make_vocab(vocab_size=vocab_size, embedding_dim=embedding_dim, device=device, dtype=dtype)
 
     # 定义 Multi-Head Attention 的参数
-    dim = 1024     # dim
+    dim = embedding_dim     # dim
     dropout_rate = 0.0  # Dropout rate
     batch_size = 1  # Number of batches
     time1 = 1      # Length of the query
@@ -441,24 +444,24 @@ def test_att():
     head_num = dim // head_size
 
     # 创建 RelPositionMultiHeadedAttention 的实例
-    attention_layer = RelPositionMultiHeadedAttention(n_head=head_num, n_feat=dim, dropout_rate=dropout_rate)
+    attention_layer = RelPositionMultiHeadedAttention(n_head=head_num, n_feat=dim, dropout_rate=dropout_rate).to(device)
 
     # 从 embeddings 中获取 query
-    query_indices = torch.randint(0, 5000, (batch_size, time1)).to('cuda')  # 随机生成查询词汇索引
-    query = embeddings[query_indices].to('cuda').view(batch_size, time1, dim)  # 获取 query 嵌入
+    query_indices = torch.randint(0, vocab_size, (batch_size, time1)).to(device)  # 随机生成查询词汇索引
+    query = embeddings[query_indices].to(device).view(batch_size, time1, dim)  # 获取 query 嵌入
 
     # 从 embeddings 中获取 key_cache 和 value_cache
-    vocab_indices = torch.randint(0, 5000, (1, head_num, cache_t)).to('cuda')  # 随机生成词汇索引
-    key_embeddings = embeddings[vocab_indices].to('cuda')  # 获取 key 嵌入
-    value_embeddings = embeddings[vocab_indices].to('cuda')  # 获取 value 嵌入     
+    vocab_indices = torch.randint(0, vocab_size, (batch_size, cache_t)).to(device)  # 随机生成词汇索引
+    key_embeddings = embeddings[vocab_indices].to(device)  # 获取 key 嵌入
+    value_embeddings = embeddings[vocab_indices].to(device)  # 获取 value 嵌入     
 
     # 调整形状以匹配 key_cache 和 value_cache
     key_cache = key_embeddings.view(1, head_num, cache_t, head_size)
     value_cache = value_embeddings.view(1, head_num, cache_t, head_size)
 
     # 创建其他必要的张量
-    mask = torch.ones(batch_size, 1, time2).to('cuda')     # Mask tensor (all ones)
-    pos_emb = torch.rand(batch_size, 2*cache_t+1, dim).to('cuda')  # Positional embedding tensor
+    mask = torch.ones(batch_size, 1, time2).to(device)     # Mask tensor (all ones)
+    pos_emb = torch.rand(batch_size, 2*cache_t+1, dim).to(device)  # Positional embedding tensor
 
     # 调用注意力层的 forward 方法
     output, key_cache, value_cache = attention_layer(query, query, query, mask, pos_emb, key_cache, value_cache)

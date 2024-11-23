@@ -152,50 +152,6 @@ inline __device__ Float8_ add(bf16_8_t a, Float8_ fb) {
 }
 
 
-
-// Vector div.
-inline __device__ __nv_bfloat16 vec_div_scalar(__nv_bfloat16 a, uint16_t b) {
-    float fa = __bfloat162float(a);         
-    float fb = static_cast<float>(b);        
-    float result = fa / fb;                  
-    return __float2bfloat16(result);         
-}
-
-inline __device__ __nv_bfloat16 vec_div_scalar(__nv_bfloat16 a, __nv_bfloat16 b) {
-  float fa = __bfloat162float(a);    
-  float fb = __bfloat162float(b);
-  float result = fa / fb;            
-  return __float2bfloat16(result);   
-}
-
-// Vectorized bfloat16 division for bf16x2 (2-element vector of bfloat16)
-inline __device__ __nv_bfloat162 vec_div_scalar(__nv_bfloat162 a, __nv_bfloat16 b) {
-  float2 fa = __bfloat1622float2(a);   
-  float fb = __bfloat162float(b);
-  fa.x /= fb;                        
-  fa.y /= fb;
-  return float2_to_bfloat162(fa);       
-}
-
-inline __device__ bf16_4_t vec_div_scalar(bf16_4_t a, __nv_bfloat16 b) {
-  bf16_4_t c;
-  c.x = vec_div_scalar(a.x, b);  
-  c.y = vec_div_scalar(a.y, b);
-  return c;
-}
-
-// Vectorized bfloat16 division for float4
-inline __device__ bf16_8_t vec_div_scalar(bf16_8_t a, __nv_bfloat16 b) {
-  bf16_8_t c;
-  c.x = vec_div_scalar(a.x, b);
-  c.y = vec_div_scalar(a.y, b);
-  c.z = vec_div_scalar(a.z, b);
-  c.w = vec_div_scalar(a.w, b);
-  return c;
-}
-
-
-
 // Vector multiplication.
 template<>
 inline __device__ __nv_bfloat16 mul(__nv_bfloat16 a, __nv_bfloat16 b) {

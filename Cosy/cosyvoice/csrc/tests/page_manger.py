@@ -382,9 +382,13 @@ def test_decode_new_page():
     print("Decode new page test passed.")
 
 
-test_free_page_queue()
-test_allocate_page()
-test_prefill()
-test_decode_fill_page()
-test_decode_reuse()
-test_decode_new_page()
+if __name__ == "__main__":
+    """
+    Testing the functionality of the page manager.
+    """
+    test_free_page_queue()
+    test_allocate_page()
+    test_prefill()
+    test_decode_fill_page()
+    test_decode_reuse()
+    test_decode_new_page()

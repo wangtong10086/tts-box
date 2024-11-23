@@ -86,30 +86,6 @@ inline __device__ float4 add(float4 a, float4 b) {
   return c;
 }
 
-
-// Vector div.
-inline __device__ float vec_div_scalar(float a, float b) {
-  return a / b;
-}
-
-inline __device__ float2 vec_div_scalar(float2 a, float b) {
-  float2 c;
-  c.x = vec_div_scalar(a.x, b);
-  c.y = vec_div_scalar(a.y, b);
-  return c;
-}
-
-inline __device__ float4 vec_div_scalar(float4 a, float b) {
-  float4 c;
-  c.x = vec_div_scalar(a.x, b);
-  c.y = vec_div_scalar(a.y, b);
-  c.z = vec_div_scalar(a.z, b);
-  c.w = vec_div_scalar(a.w, b);
-  return c;
-}
-
-
-
 // Vector multiplication.
 template<>
 inline __device__ float mul<float, float>(float a, float b) {
