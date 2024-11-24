@@ -136,8 +136,8 @@ class PageTableManager:
         assert b == 1, "Only support batch size of 1 for prefill"
         assert (b==b_v) & (seq_len==seq_len_v) & (num_head==num_head_v) & (head_size==head_size_v), "k, v shape mush same"
         
-        k_data = k_data.view(num_head, head_size // self.x_factor, seq_len, self.x_factor)
-        v_data = v_data.view(num_head, head_size, seq_len)
+        k_data = k_data.contiguous().view(num_head, head_size // self.x_factor, seq_len, self.x_factor)
+        v_data = v_data.contiguous().view(num_head, head_size, seq_len)
         
         # 划分 token_idx_list 为多个小块
         blocks = [list(map(str, token_idx_list[i:i + self.block_size])) for i in range(0, len(token_idx_list), self.block_size)]
@@ -165,14 +165,15 @@ class PageTableManager:
             self.v_cache_pool[physical_page_idx, :, :, :end_pos-start_pos] = v_data[:, :, start_pos:end_pos]
     
     def decode(self, block_token_idx:List[int], k_data: torch.Tensor, v_data: torch.Tensor):
+    
         assert k_data is not None and v_data is not None, "data must be provided for decode"
         b, seq_len, num_head, head_size = k_data.shape
         b_v, seq_len_v, num_head_v, head_size_v = v_data.shape
         assert b == 1 and seq_len==1, "Only support batch size of 1 for prefill"
         assert (b==b_v) & (seq_len==seq_len_v) & (num_head==num_head_v) & (head_size==head_size_v), "k, v shape mush same"
         
-        k_data = k_data.view(num_head, head_size // self.x_factor, self.x_factor)
-        v_data = v_data.view(num_head, head_size)
+        k_data = k_data.contiguous().view(num_head, head_size // self.x_factor, self.x_factor)
+        v_data = v_data.contiguous().view(num_head, head_size)
         
         current_token_id = block_token_idx[-1]
         # 如果有未填满的page

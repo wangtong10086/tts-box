@@ -329,7 +329,7 @@ __global__ void xl_single_query_cached_kv_attention_kernel(
   const scalar_t* __restrict__ k_cache,   // [num_blocks, num_heads, head_size/x, block_size, x]
   const scalar_t* __restrict__ v_cache,   // [num_blocks, num_heads, head_size, block_size]
   const scalar_t* __restrict__ pos_bias_u, // [num_seqs, num_heads, head_size]
-  const scalar_t* __restrict__ matrix_bd, // [num_seqs, num_heads, block_size]
+  const scalar_t* __restrict__ matrix_bd, // [num_seqs, num_heads, num_tokens]
   const float scale,
   const int* __restrict__ block_tables,   // [num_seqs, max_num_blocks_per_seq]
   const int* __restrict__ context_lens,   // [num_seqs]
@@ -481,10 +481,9 @@ __global__ void xl_single_query_cached_kv_attention_kernel(
       if (thread_group_offset == 0) {
         // add base offset, --> head idx
         // matrix_bd [num_seqs, num_heads, num_blocks, block_size]  -- [num_seqs, num_heads, context_len]
-        const int matrix_bd_seq_stride = seq_idx*num_heads*context_len;
-        const int matrix_bd_offset =  head_idx*context_len + block_idx*BLOCK_SIZE;
-        if (block_idx*BLOCK_SIZE + token_idx < context_len){
-          scalar_t matrix_bd_val = matrix_bd[matrix_bd_seq_stride + matrix_bd_offset + token_idx];
+        const int matrix_bd_seq_base = seq_idx*num_heads*context_len + head_idx*context_len;
+        if (token_idx < context_len){
+          scalar_t matrix_bd_val = matrix_bd[matrix_bd_seq_base + token_idx];
           qk += scale*to_float(matrix_bd_val);
         }
         // Store the partial reductions to shared memory.
