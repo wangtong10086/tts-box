@@ -121,6 +121,15 @@ class PageTableManager:
     def get_cached_pages(self):
         return self.k_cache_pool, self.v_cache_pool
     
+    def print_page_Tensor(self):
+        if len(self.sequence_page_table) == 0:
+            print("sequence_page_table is empty")
+            return
+        print("print k_cache_pool")
+        print(self.k_cache_pool[self.sequence_page_table[0]])
+        print("print v_cache_pool")
+        print(self.v_cache_pool[self.sequence_page_table[0]])
+
     def prefill(self, token_idx_list: list, k_data: torch.Tensor, v_data: torch.Tensor):
         """
         预填充页面池，根据 token_idx_list 划分块并将数据填充到页面中。
@@ -135,9 +144,13 @@ class PageTableManager:
         b_v, seq_len_v, num_head_v, head_size_v = v_data.shape
         assert b == 1, "Only support batch size of 1 for prefill"
         assert (b==b_v) & (seq_len==seq_len_v) & (num_head==num_head_v) & (head_size==head_size_v), "k, v shape mush same"
-        
-        k_data = k_data.contiguous().view(num_head, head_size // self.x_factor, seq_len, self.x_factor)
-        v_data = v_data.contiguous().view(num_head, head_size, seq_len)
+        assert head_size % self.x_factor == 0, "head_size must be divisible by self.x_factor"
+
+        k_data = k_data.squeeze(0) # [seq_len, num_head, head_size]
+        v_data = v_data.squeeze(0) # [seq_len, num_head, head_size]
+        reshaped_k_tensor = k_data.contiguous().view(seq_len, num_head, head_size // self.x_factor, self.x_factor)
+        k_data = reshaped_k_tensor.permute(1, 2, 0, 3) # [num_head, head_size // x_factor, seq_len, x_factor]
+        v_data = v_data.permute(1, 2, 0) # [num_head, head_size, seq_len]
         
         # 划分 token_idx_list 为多个小块
         blocks = [list(map(str, token_idx_list[i:i + self.block_size])) for i in range(0, len(token_idx_list), self.block_size)]
@@ -171,10 +184,15 @@ class PageTableManager:
         b_v, seq_len_v, num_head_v, head_size_v = v_data.shape
         assert b == 1 and seq_len==1, "Only support batch size of 1 for prefill"
         assert (b==b_v) & (seq_len==seq_len_v) & (num_head==num_head_v) & (head_size==head_size_v), "k, v shape mush same"
-        
+        assert head_size % self.x_factor == 0, "head_size must be divisible by self.x_factor"
+
+        k_data = k_data.squeeze(0).squeeze(0) # [num_head, head_size]
+        v_data = v_data.squeeze(0).squeeze(0) # [num_head, head_size]
         k_data = k_data.contiguous().view(num_head, head_size // self.x_factor, self.x_factor)
-        v_data = v_data.contiguous().view(num_head, head_size)
         
+        print(f"k_data: {k_data}")
+        print(f"v_data: {v_data}")
+
         current_token_id = block_token_idx[-1]
         # 如果有未填满的page
         if self.remain_pages:

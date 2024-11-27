@@ -5,7 +5,7 @@ import torch
 from torch import nn
 from page_manger import PageTableManager
 
-import attention_cuda
+# import attention_cuda
 
 class MultiHeadedAttention(nn.Module):
     """Multi-Head Attention layer.
@@ -289,9 +289,14 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         # >>> torch.equal(b, c)        # True
         # >>> d = torch.split(a, 2, dim=-1)
         # >>> torch.equal(d[0], d[1])  # True
+        #print(f"k:{k.shape}") # [1, 16, 11, 64]
+        #print(f"k:{k}")
+        #print(f"v:{v.shape}") # [1, 16, 11, 64]
+        #print(f"v:{v}")
         if key_cache.size(0) > 0:
             k = torch.cat([key_cache, k], dim=2)
             v = torch.cat([value_cache, v], dim=2)
+        
         #print("k.shape: ", k.shape) # torch.Size([1, 16, 11, 64])
         #print("v.shape: ", v.shape)
         # NOTE(xcsong): We do cache slicing in encoder.forward_chunk, since it's
@@ -305,7 +310,7 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
 
         # (batch, head, time1, d_k)
         #print("shape info")
-        print("q: ", q.shape)
+        #print("q: ", q.shape)
         #print(self.pos_bias_u.shape)
         #print("self.pos_bias_v: ", self.pos_bias_v.shape) # [16, 64]
         #print("self.pos_bias_u.shape: ", self.pos_bias_u.shape) # [16, 64]
@@ -324,15 +329,15 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
 
         # compute matrix b and matrix d
         # (batch, head, time1, time2)
-        print(f"q_with_bias_v: {q_with_bias_v.shape}") # [1, 16, 1, 64]
-        print(f"p: {p.shape}") # [1, 16, 21, 64]
+        #print(f"q_with_bias_v: {q_with_bias_v.shape}") # [1, 16, 1, 64]
+        #print(f"p: {p.shape}") # [1, 16, 21, 64]
         matrix_bd = torch.matmul(q_with_bias_v, p.transpose(-2, -1))  # do out of cuda kernel
         
         # NOTE(Xiang Lyu): Keep rel_shift since espnet rel_pos_emb is used
         if matrix_ac.shape != matrix_bd.shape:   # do out of cuda kernel
             matrix_bd = self.rel_shift(matrix_bd)
 
-        print("matrix_bd: ", matrix_bd.shape) #[1, 16, 1, 11]
+        #print("matrix_bd: ", matrix_bd.shape) #[1, 16, 1, 11]
         scores = (matrix_ac + matrix_bd) / math.sqrt(
             self.d_k)  # (batch, head, time1, time2)
 
@@ -394,6 +399,7 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         
         kv_indices.append(kv_current_index)
         cache_manger.decode(kv_indices, k, v)
+        #cache_manger.print_page_Tensor()
         
         key_cache, value_cache = cache_manger.get_cached_pages()
         
@@ -412,19 +418,19 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         
         output = torch.empty(1, num_heads, head_size, dtype=q.dtype, device=device)
         
-        attention_cuda.xl_single_query_cached_kv_attention(
-            output,
-            q,
-            key_cache,
-            value_cache,
-            self.pos_bias_u,
-            matrix_bd,
-            scale,
-            block_tables,
-            context_lens,
-            block_size,
-            max_context_len,
-        )
+        #attention_cuda.xl_single_query_cached_kv_attention(
+        #    output,
+        #    q,
+        #    key_cache,
+        #    value_cache,
+        #    self.pos_bias_u,
+        #    matrix_bd,
+        #    scale,
+        #    block_tables,
+        #    context_lens,
+        #    block_size,
+        #    max_context_len,
+        #)
         
         return output
         
@@ -485,13 +491,13 @@ def test_att():
     # 打印输出和新缓存的形状
     print("Output shape:", output.shape)           # 预期形状: (batch_size, time1, n_feat)
     
-    print(output)
+    #print(output)
     
     kv_indices = vocab_indices.tolist()
     num_tokens = cache_t+1
     page_output = attention_layer.infer(device, head_num, head_size, query_indices, num_tokens, kv_indices, query, query, query, key_cache, value_cache, pos_emb)
     print("page Output shape:", page_output.shape)
-    print(page_output)
+    #print(page_output)
     
 
 
