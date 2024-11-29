@@ -392,7 +392,7 @@ __global__ void xl_single_query_cached_kv_attention_kernel(
 
   // x == THREAD_GROUP_SIZE * VEC_SIZE
   // Each thread group fetches x elements from the key at a time.
-  constexpr int x = 16 / sizeof(scalar_t); // 16/2=8
+  constexpr int x = 16 / sizeof(scalar_t); // fp16: 16/2=8 , fp32: 16/4=4
   float qk_max = -FLT_MAX;
 
   const int* block_table = block_tables + seq_idx * max_num_blocks_per_seq;

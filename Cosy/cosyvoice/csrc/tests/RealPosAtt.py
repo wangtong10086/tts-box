@@ -365,7 +365,8 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         key_cache = key_cache.transpose(1, 2)   # [1, 16, 10, 64]  -- > [1, 10, 16, 64] 
         value_cache = value_cache.transpose(1, 2)   # [1, 16, 10, 64] -- > [1, 10, 16, 64] 
         
-        x_factor = 8
+        # x = 16 / sizeof(scalar_t)
+        x_factor = 16 / 4
         cache_manger = PageTableManager(block_size=block_size, num_head=num_heads, headsize=head_size,
                                        initial_pages=16, max_pages=512, dtype=query.dtype, x_factor=x_factor)
         
