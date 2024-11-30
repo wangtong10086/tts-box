@@ -5,7 +5,7 @@ import torch
 from torch import nn
 from page_manger import PageTableManager
 
-# import attention_cuda
+import attention_cuda
 
 class MultiHeadedAttention(nn.Module):
     """Multi-Head Attention layer.
@@ -289,18 +289,16 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         # >>> torch.equal(b, c)        # True
         # >>> d = torch.split(a, 2, dim=-1)
         # >>> torch.equal(d[0], d[1])  # True
-        #print(f"k:{k.shape}") # [1, 16, 11, 64]
-        #print(f"k:{k}")
-        #print(f"v:{v.shape}") # [1, 16, 11, 64]
-        #print(f"v:{v}")
         if key_cache.size(0) > 0:
             k = torch.cat([key_cache, k], dim=2)
             v = torch.cat([value_cache, v], dim=2)
-        
         #print("k.shape: ", k.shape) # torch.Size([1, 16, 11, 64])
         #print("v.shape: ", v.shape)
         # NOTE(xcsong): We do cache slicing in encoder.forward_chunk, since it's
         #   non-trivial to calculate `next_cache_start` here.
+        
+        #print(f"k: {k}")
+        #print(f"v: {v}")
 
         n_batch_pos = pos_emb.size(0)
         p = self.linear_pos(pos_emb).view(n_batch_pos, -1, self.h, self.d_k)
@@ -310,7 +308,7 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
 
         # (batch, head, time1, d_k)
         #print("shape info")
-        #print("q: ", q.shape)
+        print("q: ", q.shape)
         #print(self.pos_bias_u.shape)
         #print("self.pos_bias_v: ", self.pos_bias_v.shape) # [16, 64]
         #print("self.pos_bias_u.shape: ", self.pos_bias_u.shape) # [16, 64]
@@ -324,23 +322,30 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         # first compute matrix a and matrix c
         # as described in https://arxiv.org/abs/1901.02860 Section 3.3
         # (batch, head, time1, time2)
+        #print(f"q_with_bias_u: {q_with_bias_u.shape}") #1, 1, 16, 64
+        #print(f"q_with_bias_u: {q_with_bias_u[:,0,...]}")
+        #print(f"k: {k.shape}") 
+        #print(f"k: {k[0,0,0,:]}")
         matrix_ac = torch.matmul(q_with_bias_u, k.transpose(-2, -1))
         #print("matrix_ac: ", matrix_ac.shape) # [1, 16, 1, 11]
 
         # compute matrix b and matrix d
         # (batch, head, time1, time2)
-        #print(f"q_with_bias_v: {q_with_bias_v.shape}") # [1, 16, 1, 64]
-        #print(f"p: {p.shape}") # [1, 16, 21, 64]
+        # print(f"q_with_bias_v: {q_with_bias_v.shape}") # [1, 16, 1, 64]
+        # print(f"p: {p.shape}") # [1, 16, 21, 64]
         matrix_bd = torch.matmul(q_with_bias_v, p.transpose(-2, -1))  # do out of cuda kernel
         
         # NOTE(Xiang Lyu): Keep rel_shift since espnet rel_pos_emb is used
         if matrix_ac.shape != matrix_bd.shape:   # do out of cuda kernel
             matrix_bd = self.rel_shift(matrix_bd)
-
+            
+        #print("matrix_ac: ", matrix_ac[0, 0:2, :, :])
+        #print("matrix_bd: ", matrix_bd[0, 0:2, :, :])
         #print("matrix_bd: ", matrix_bd.shape) #[1, 16, 1, 11]
         scores = (matrix_ac + matrix_bd) / math.sqrt(
             self.d_k)  # (batch, head, time1, time2)
 
+        #print("scores: ", scores[0, 0:2, :, :])
         return self.forward_attention(v, scores, mask), k, v
     
     
@@ -365,8 +370,8 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         key_cache = key_cache.transpose(1, 2)   # [1, 16, 10, 64]  -- > [1, 10, 16, 64] 
         value_cache = value_cache.transpose(1, 2)   # [1, 16, 10, 64] -- > [1, 10, 16, 64] 
         
-        # x = 16 / sizeof(scalar_t)
-        x_factor = 16 / 4
+        # 16 / sizeof(dtype)
+        x_factor = 4
         cache_manger = PageTableManager(block_size=block_size, num_head=num_heads, headsize=head_size,
                                        initial_pages=16, max_pages=512, dtype=query.dtype, x_factor=x_factor)
         
@@ -389,10 +394,9 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         if qk_shape != matrix_bd.shape:
             matrix_bd = self.rel_shift(matrix_bd) # [1, 16, 11] <--> [num_seqs, num_heads, context_len]
         
-        #print(f"page matrix_bd: {matrix_bd.shape}")
+        matrix_bd = matrix_bd.contiguous().view(1, num_heads, num_tokens)
         
-        matrix_bd = matrix_bd.view(1, num_heads, num_tokens)
-        
+        #print(f"page matrix_bd: {matrix_bd}")
         
         q = torch.squeeze(q, dim=1) # [1, 16, 64]
         k = k.transpose(1, 2)
@@ -400,7 +404,9 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         
         kv_indices.append(kv_current_index)
         cache_manger.decode(kv_indices, k, v)
+        
         #cache_manger.print_page_Tensor()
+        
         
         key_cache, value_cache = cache_manger.get_cached_pages()
         
@@ -419,20 +425,22 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         
         output = torch.empty(1, num_heads, head_size, dtype=q.dtype, device=device)
         
-        #attention_cuda.xl_single_query_cached_kv_attention(
-        #    output,
-        #    q,
-        #    key_cache,
-        #    value_cache,
-        #    self.pos_bias_u,
-        #    matrix_bd,
-        #    scale,
-        #    block_tables,
-        #    context_lens,
-        #    block_size,
-        #    max_context_len,
-        #)
+        attention_cuda.xl_single_query_cached_kv_attention(
+            output,
+            q,
+            key_cache,
+            value_cache,
+            self.pos_bias_u,
+            matrix_bd,
+            scale,
+            block_tables,
+            context_lens,
+            block_size,
+            max_context_len,
+        )
         
+        output = output.contiguous().view(1, -1, self.h * self.d_k)
+        output = self.linear_out(output)
         return output
         
 
@@ -492,13 +500,14 @@ def test_att():
     # 打印输出和新缓存的形状
     print("Output shape:", output.shape)           # 预期形状: (batch_size, time1, n_feat)
     
-    #print(output)
+    print("output: ", output)
     
+    vocab_indices = vocab_indices.view(-1)
     kv_indices = vocab_indices.tolist()
     num_tokens = cache_t+1
     page_output = attention_layer.infer(device, head_num, head_size, query_indices, num_tokens, kv_indices, query, query, query, key_cache, value_cache, pos_emb)
     print("page Output shape:", page_output.shape)
-    #print(page_output)
+    print("page_output: ", page_output)
     
 
 

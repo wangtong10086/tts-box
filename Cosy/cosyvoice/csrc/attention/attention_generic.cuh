@@ -69,17 +69,17 @@ inline __device__ void zero(T& dst) {
 
 
 template <typename T>
-inline __device__ float to_float(const T& value) {
+inline __device__ float convert_float(const T& value) {
     return static_cast<float>(value);
 }
 
 template <>
-inline __device__ float to_float(const __nv_bfloat16& value) {
+inline __device__ float convert_float(const __nv_bfloat16& value) {
     return __bfloat162float(value);
 }
 
 template <>
-inline __device__ float to_float(const __half& value) {
+inline __device__ float convert_float(const __half& value) {
     return __half2float(value);
 }
 

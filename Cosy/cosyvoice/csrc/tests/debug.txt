@@ -129,8 +129,20 @@ __global__ void xl_single_query_cached_kv_attention_kernel(
     // 30*4, 31*4, ..., 30*4, 31*4 loop 15
     q_vecs[i] = *reinterpret_cast<const Q_vec*>(q_ptr + vec_idx * VEC_SIZE);
     q_vecs[i] = add(q_vecs[i], *reinterpret_cast<const Q_vec*>(pos_bias_u_ptr + vec_idx * VEC_SIZE));
+    //if(threadIdx.x < 2 && blockIdx.x < 1)
+    //{
+    //  float f_q = convert_float(q[seq_idx * q_stride + head_idx * HEAD_SIZE + vec_idx * VEC_SIZE]);
+    //  float f_bias = convert_float(pos_bias_u[seq_idx * q_stride + head_idx * HEAD_SIZE + vec_idx * VEC_SIZE]);
+    //  float f_ad = f_q + f_bias;
+    //  printf("i:%d -tid:%d- %f -- %f -- q:%f  ", i, threadIdx.x, f_q, f_bias, f_ad);
+    //}
         
   }
+
+  //if(threadIdx.x < 1 && blockIdx.x < 1)
+  //{
+  //  printf("\n");
+  //}
 
   // Memory planning.
   extern __shared__ char shared_mem[];
@@ -215,6 +227,17 @@ __global__ void xl_single_query_cached_kv_attention_kernel(
         // 15*16*8, 15*16*8+4, ...,        loop 15
         k_vecs[j] = *reinterpret_cast<const K_vec*>(k_ptr + offset1 * BLOCK_SIZE * x + offset2);
 
+    //    if(threadIdx.x < 2 && blockIdx.x < 1)
+    //{
+    //  float f_k = convert_float(k_cache[physical_block_number * num_heads * HEAD_SIZE * BLOCK_SIZE
+    //                                    + head_idx * HEAD_SIZE * BLOCK_SIZE
+    //                                    + physical_block_offset * x + offset1 * BLOCK_SIZE * x + offset2]);
+    //  int s_off = physical_block_number * num_heads * HEAD_SIZE * BLOCK_SIZE
+    //                                    + head_idx * HEAD_SIZE * BLOCK_SIZE
+    //                                    + physical_block_offset * x + offset1 * BLOCK_SIZE * x + offset2;
+    //  printf("j:%d -tid:%d  -phy:%d -off:%d -k:%f  ", j, threadIdx.x, physical_block_number,  s_off, f_k);
+    //}
+
       }
 
       // Compute dot product.
@@ -232,14 +255,34 @@ __global__ void xl_single_query_cached_kv_attention_kernel(
         // add base offset, --> head idx
         // matrix_bd [num_seqs, num_heads, num_blocks, block_size]  -- [num_seqs, num_heads, context_len]
         const int matrix_bd_seq_base = seq_idx*num_heads*context_len + head_idx*context_len;
+        //if(token_idx < context_len && blockIdx.x <= 1){
+        //  printf("token_idx:%d -- qk:%f  ", token_idx, qk);
+        //  if (threadIdx.x == 0)
+        //    printf("\n");
+        //}
           
         if (token_idx < context_len){
           float matrix_bd_val = convert_float(matrix_bd[matrix_bd_seq_base + token_idx]);
+          //float add_val = qk+matrix_bd_val;
+          //if(threadIdx.x < 32 && blockIdx.x <= 1)
+          //{
+          //  printf("matrix_bd id:%d -- val:%f --add:%f ", matrix_bd_seq_base+token_idx, matrix_bd_val, add_val);
+          //  if (threadIdx.x == 0)
+          //    printf("\n");
+          //}
           qk = (scale*(qk+matrix_bd_val));
+          //if(threadIdx.x < 32 && blockIdx.x <= 1)
+          //{
+          //  printf("qk id:%d --scale:%f --add_val:%f -- val:%f --qk:%f ", token_idx, scale, add_val, (scale*add_val), qk);
+          //}
         }
         // Store the partial reductions to shared memory.
         // NOTE(woosuk): It is required to zero out the masked logits.
         logits[token_idx] = mask ? 0.f : qk;
+        //if(threadIdx.x < 32 && blockIdx.x <= 1)
+        //{
+        //  printf("logits id:%d -- val:%f  ", token_idx, logits[token_idx]);
+        //}
         // Update the max value.
         // cross warp qk reduce.... eg token 0, 4, 8 ... reduce
         qk_max = mask ? qk_max : fmaxf(qk_max, qk);

@@ -189,9 +189,7 @@ class PageTableManager:
         k_data = k_data.squeeze(0).squeeze(0) # [num_head, head_size]
         v_data = v_data.squeeze(0).squeeze(0) # [num_head, head_size]
         k_data = k_data.contiguous().view(num_head, head_size // self.x_factor, self.x_factor)
-        
-        print(f"k_data: {k_data}")
-        print(f"v_data: {v_data}")
+
 
         current_token_id = block_token_idx[-1]
         # 如果有未填满的page

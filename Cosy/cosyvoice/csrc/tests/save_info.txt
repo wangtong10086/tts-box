@@ -1,0 +1,40 @@
+matrix_ac:  tensor([[[ -5.8150,  -1.4389,  -6.2327, -11.5061,   1.9490,   2.9639,   5.2326,
+           -3.2419,  -3.3863,  -1.0081,   1.1972]],
+
+        [[  1.6577,  -4.9502,  -8.4293,  -7.4154,   2.0052,  -2.6620,  -4.7434,
+            3.0114,  -1.3103,  -0.2511,   2.9247]]], device='cuda:0',
+       grad_fn=<SliceBackward0>)
+matrix_bd:  tensor([[[-0.0482, -1.2924, -0.4853, -2.0853, -1.2891, -2.0685, -1.4507,
+          -0.3026, -0.3252, -2.8310, -2.7260]],
+
+        [[ 2.2068,  2.0556,  0.2549, -0.7069,  0.8599, -1.4596,  1.7223,
+           1.8441,  2.6099,  0.1993, -0.7369]]], device='cuda:0',
+       grad_fn=<SliceBackward0>)
+scores:  tensor([[[-0.7329, -0.3414, -0.8398, -1.6989,  0.0825,  0.1119,  0.4727,
+          -0.4431, -0.4639, -0.4799, -0.1911]],
+
+        [[ 0.4831, -0.3618, -1.0218, -1.0153,  0.3581, -0.5152, -0.3776,
+           0.6069,  0.1625, -0.0065,  0.2735]]], device='cuda:0',
+       grad_fn=<SliceBackward0>)
+Output shape: torch.Size([1, 1, 1024])
+page Output shape: torch.Size([1, 16, 64])
+token_idx:0 -- qk:-5.815015  token_idx:1 -- qk:-1.438892  token_idx:2 -- qk:-6.232719  token_idx:3 -- qk:-11.506061  token_idx:4 -- qk:1.948959  token_idx:5 -- qk:2.963914  
+token_idx:6 -- qk:5.232628  token_idx:7 -- qk:-3.241852  token_idx:8 -- qk:-3.386345  token_idx:9 -- qk:-1.008138  token_idx:10 -- qk:1.197171  token_idx:0 -- qk:1.657732  
+token_idx:1 -- qk:-4.950170  token_idx:2 -- qk:-8.429258  token_idx:3 -- qk:-7.415380  token_idx:4 -- qk:2.005166  token_idx:5 -- qk:-2.662029  token_idx:6 -- qk:-4.743384  
+token_idx:7 -- qk:3.011381  token_idx:8 -- qk:-1.310265  token_idx:9 -- qk:-0.251076  token_idx:10 -- qk:2.924739
+
+matrix_bd id:0 -- val:-0.048175  matrix_bd id:1 -- val:-1.292448  matrix_bd id:2 -- val:-0.485320  matrix_bd id:3 -- val:-2.085287  matrix_bd id:4 -- val:-1.289080  
+matrix_bd id:5 -- val:-2.068512  matrix_bd id:6 -- val:-1.450737  matrix_bd id:7 -- val:-0.302553  matrix_bd id:8 -- val:-0.325185  matrix_bd id:9 -- val:-2.830978  
+matrix_bd id:10 -- val:-2.726034  matrix_bd id:11 -- val:2.206811  matrix_bd id:12 -- val:2.055593  matrix_bd id:13 -- val:0.254888  matrix_bd id:14 -- val:-0.706942  
+matrix_bd id:15 -- val:0.859854  matrix_bd id:16 -- val:-1.459617  matrix_bd id:17 -- val:1.722349  matrix_bd id:18 -- val:1.844102  matrix_bd id:19 -- val:2.609889  
+matrix_bd id:20 -- val:0.199317  matrix_bd id:21 -- val:-0.736903
+
+scale:0.125000
+logits id:0 -- val:2.140800  logits id:1 -- val:-5.311992  logits id:2 -- val:-9.451055  logits id:3 -- val:-8.430670  logits id:4 -- val:2.363294  
+logits id:5 -- val:-3.177235  logits id:6 -- val:-5.121014  logits id:7 -- val:3.618317  logits id:8 -- val:-1.147812  logits id:9 -- val:-0.257546  
+logits id:10 -- val:3.198218  logits id:11 -- val:0.000000  logits id:12 -- val:0.000000  logits id:13 -- val:0.000000  logits id:14 -- val:0.000000  
+logits id:15 -- val:0.000000  logits id:0 -- val:-6.547914  logits id:1 -- val:-1.780310  logits id:2 -- val:-7.072474  logits id:3 -- val:-13.204979  
+logits id:4 -- val:2.031444  logits id:5 -- val:3.075840  logits id:6 -- val:5.705364  logits id:7 -- val:-3.684902  logits id:8 -- val:-3.850286  
+logits id:9 -- val:-1.488028  logits id:10 -- val:1.006063  logits id:11 -- val:0.000000  logits id:12 -- val:0.000000  logits id:13 -- val:0.000000 
+ logits id:14 -- val:0.000000  logits id:15 -- val:0.000000
+(base) PS E:\Codes\CosyVoice\cosyvoice\csrc>
