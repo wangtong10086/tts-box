@@ -21,7 +21,7 @@ class FreePageQueue:
 
 
 class PageTableManager:
-    def __init__(self, block_size, num_head, headsize, initial_pages, max_pages, dtype, x_factor, initial_expansion_step=10):
+    def __init__(self, block_size, num_head, headsize, initial_pages, max_pages, dtype, x_factor, num_layers, initial_expansion_step=10):
         self.block_size = block_size
         self.num_head = num_head
         self.headsize = headsize
@@ -31,28 +31,59 @@ class PageTableManager:
         self.dtype = dtype
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.x_factor = x_factor
+        self.num_layers = num_layers
 
         # 页面池，初始化存储 k_cache 和 v_cache 的数据
-        self.k_cache_pool = torch.zeros((self.current_capacity, self.num_head, self.headsize // self.x_factor, self.block_size, self.x_factor),
-                                        device=self.device, dtype=self.dtype)
-        self.v_cache_pool = torch.zeros((self.current_capacity, self.num_head, self.headsize, self.block_size),
-                                        device=self.device, dtype=self.dtype)
+        self.k_cache_pool = {
+            layer: torch.zeros((self.current_capacity, self.num_head, self.headsize // self.x_factor, self.block_size, self.x_factor),
+                               device=self.device, dtype=self.dtype)
+            for layer in range(self.num_layers)
+        }
+        self.v_cache_pool = {
+            layer: torch.zeros((self.current_capacity, self.num_head, self.headsize, self.block_size),
+                               device=self.device, dtype=self.dtype)
+            for layer in range(self.num_layers)
+        }
         
         # 物理页的引用计数，初始时为0
-        self.page_usage = [0] * self.current_capacity
-        # 虚拟页--物理也映射表
-        self.page_map = {}
+        self.page_usage = {layer: [0] * self.current_capacity for layer in range(self.num_layers)}
+        # 虚拟页--物理页映射表
+        self.page_map = {layer: {} for layer in range(self.num_layers)}
         # 未完全填充的逻辑页编号列表
-        self.remain_pages = []
-        # 序列中每个token对应的物理页, eg, sequence_page_table[0]代表第一个token对应的物理页
-        self.sequence_page_table = []
+        self.remain_pages = {layer: [] for layer in range(self.num_layers)}
+        # 序列中每个 token 对应的物理页
+        self.sequence_page_table = {layer: [] for layer in range(self.num_layers)}
         
         # 空闲 page 队列  -- 左侧出队，右侧入队
-        self.free_page_queue = FreePageQueue(self.current_capacity)
+        self.free_page_queue = {layer: FreePageQueue(self.current_capacity) for layer in range(self.num_layers)}
 
-    def _expand_pool(self):
+    def allocate_page(self, layer: int, page_id: str) -> int:
+        """
+        分配指定层的页面
+        """
+        if page_id in self.page_map[layer]:
+            self.page_usage[layer][self.page_map[layer][page_id]] += 1
+            return self.page_map[layer][page_id]
+
+        page_idx = self.free_page_queue[layer].dequeue_left()
+        if page_idx == -1:
+            if self.current_capacity >= self.max_pages:
+                logging.error(f"Layer {layer}: Page pool has reached maximum capacity.")
+                return -1
+            self._expand_pool(layer)
+            return self.allocate_page(layer, page_id)
+
+        assert self.page_usage[layer][page_idx] == 0, "Page usage count should be 0 before allocation."
+        self.page_usage[layer][page_idx] += 1
+        self.page_map[layer][page_id] = page_idx
+        return page_idx
+
+    def _expand_pool(self, layer: int):
+        """
+        为指定层扩展页面池
+        """
         if self.current_capacity >= self.max_pages:
-            logging.info("Page pool has reached maximum capacity.")
+            logging.info(f"Layer {layer}: Page pool has reached maximum capacity.")
             return
 
         # 混合策略扩展步长
@@ -65,38 +96,18 @@ class PageTableManager:
                                         device=self.device, dtype=self.dtype)
         new_v_cache_pages = torch.zeros((additional_pages, self.num_head, self.headsize, self.block_size),
                                         device=self.device, dtype=self.dtype)
-        self.k_cache_pool = torch.cat((self.k_cache_pool, new_k_cache_pages), dim=0)
-        self.v_cache_pool = torch.cat((self.v_cache_pool, new_v_cache_pages), dim=0)
+        self.k_cache_pool[layer] = torch.cat((self.k_cache_pool[layer], new_k_cache_pages), dim=0)
+        self.v_cache_pool[layer] = torch.cat((self.v_cache_pool[layer], new_v_cache_pages), dim=0)
 
-        
-        self.page_usage.extend([0] * additional_pages)
-        self.free_page_queue.batch_enqueue_right(range(self.current_capacity, new_capacity))
+        self.page_usage[layer].extend([0] * additional_pages)
+        self.free_page_queue[layer].batch_enqueue_right(range(self.current_capacity, new_capacity))
         self.current_capacity = new_capacity
 
         if self.current_capacity <= 256:
             self.expansion_step *= 2
 
-        logging.info(f"Expanded page pool to new capacity: {self.current_capacity}, expansion_step: {expansion_step}")
+        logging.info(f"Layer {layer}: Expanded page pool to new capacity: {self.current_capacity}, expansion_step: {expansion_step}")
 
-
-    def allocate_page(self, page_id: str) -> int:
-        if page_id in self.page_map:
-            self.page_usage[self.page_map[page_id]] += 1
-            return self.page_map[page_id]
-
-        page_idx = self.free_page_queue.dequeue_left()
-        if page_idx == -1:
-            if self.current_capacity >= self.max_pages:
-                logging.error("Page pool has reached maximum capacity.")
-                return -1
-            self._expand_pool()
-            return self.allocate_page(page_id)
-
-        assert self.page_usage[page_idx] == 0, "Page usage count should be 0 before allocation."
-        self.page_usage[page_idx] += 1
-        self.page_map[page_id] = page_idx
-        return page_idx
-    
     def hash_block(self, block_token_idx: List[str], block_token_pos: List[str]) -> str:
         hashed_block_token_pos = '#'.join(block_token_pos)
         return '#'.join(block_token_idx)+"@"+hashed_block_token_pos
@@ -118,19 +129,19 @@ class PageTableManager:
         updated_logical_id = f"{part1}@{part2}"
         return updated_logical_id, first_masked_pos
 
-    def get_cached_pages(self):
-        return self.k_cache_pool, self.v_cache_pool
+    def get_cached_pages(self, layer:int):
+        return self.k_cache_pool[layer], self.v_cache_pool[layer]
     
-    def print_page_Tensor(self):
-        if len(self.sequence_page_table) == 0:
+    def print_page_Tensor(self, layer):
+        if len(self.sequence_page_table[[layer]]) == 0:
             print("sequence_page_table is empty")
             return
         print("print k_cache_pool")
-        print(self.k_cache_pool[self.sequence_page_table[0]])
+        print(self.k_cache_pool[layer][self.sequence_page_table[layer][0]])
         print("print v_cache_pool")
-        print(self.v_cache_pool[self.sequence_page_table[0]])
+        print(self.v_cache_pool[layer][self.sequence_page_table[layer][0]])
 
-    def prefill(self, token_idx_list: list, k_data: torch.Tensor, v_data: torch.Tensor):
+    def prefill(self, layer: int, token_idx_list: list, k_data: torch.Tensor, v_data: torch.Tensor):
         """
         预填充页面池，根据 token_idx_list 划分块并将数据填充到页面中。
         映射表 str(token_idx_list) -- > 物理块id
@@ -165,19 +176,19 @@ class PageTableManager:
             logical_page_id = self.hash_block(block, block_token_pos)
             mask_count = logical_page_id.count('M')
             if 'M' in logical_page_id:
-                self.remain_pages.append(logical_page_id)
-            physical_page_idx = self.allocate_page(logical_page_id)
+                self.remain_pages[layer].append(logical_page_id)
+            physical_page_idx = self.allocate_page(layer, logical_page_id)
             if physical_page_idx == -1:
                 raise ValueError("Allocate memory out of max page size, Failed to allocate page for block:", block)
             fill_token_size = self.block_size - mask_count
-            self.sequence_page_table.extend([physical_page_idx] * fill_token_size)
+            self.sequence_page_table[layer].extend([physical_page_idx] * fill_token_size)
             # 对于每个块中的每个 token_idx，从 data 中提取对应的 token embedding
             start_pos = idx * self.block_size
             end_pos = min(start_pos + self.block_size, seq_len)
-            self.k_cache_pool[physical_page_idx, :, :, :end_pos-start_pos, :] = k_data[:, :, start_pos:end_pos, :]
-            self.v_cache_pool[physical_page_idx, :, :, :end_pos-start_pos] = v_data[:, :, start_pos:end_pos]
+            self.k_cache_pool[layer][physical_page_idx, :, :, :end_pos-start_pos, :] = k_data[:, :, start_pos:end_pos, :]
+            self.v_cache_pool[layer][physical_page_idx, :, :, :end_pos-start_pos] = v_data[:, :, start_pos:end_pos]
     
-    def decode(self, block_token_idx:List[int], k_data: torch.Tensor, v_data: torch.Tensor):
+    def decode(self, layer: int, block_token_idx:List[int], k_data: torch.Tensor, v_data: torch.Tensor):
     
         assert k_data is not None and v_data is not None, "data must be provided for decode"
         b, seq_len, num_head, head_size = k_data.shape
@@ -193,50 +204,50 @@ class PageTableManager:
 
         current_token_id = block_token_idx[-1]
         # 如果有未填满的page
-        if self.remain_pages:
+        if self.remain_pages[layer]:
             # 找到未填满的page, 现在只考虑单个sequence，所以remain_pages只会有一个元素
             # 并且该元素一定指向先前生成token的尾端
-            logical_remain_page_id = self.remain_pages[0]
+            logical_remain_page_id = self.remain_pages[layer][0]
             # 替换其中首个'M'字段，组成新的逻辑页id, 并查找第一个 'M' 在列表中的位置
             new_page_id, first_masked_pos = self.replace_first_masked_position(logical_remain_page_id, current_token_id)
             # 找到当前物理页id
-            physical_current_page_id = self.page_map[logical_remain_page_id]
+            physical_current_page_id = self.page_map[layer][logical_remain_page_id]
             # 是否已经有对应的page -- 如果有, 直接复用, 在共享prompt和parallel sampling中，可能会出现该情况 
-            if new_page_id in self.page_map:
+            if new_page_id in self.page_map[layer]:
                 # 找到更新的物理页
-                physical_update_page_id = self.page_map[new_page_id]
+                physical_update_page_id = self.page_map[layer][new_page_id]
                 # 当前引用更新，不再引用旧的物理页
-                self.page_usage[physical_current_page_id] -= 1
-                self.page_usage[physical_update_page_id] += 1
+                self.page_usage[layer][physical_current_page_id] -= 1
+                self.page_usage[layer][physical_update_page_id] += 1
 
                 # 找到先前生成token有多少个mask，只考虑单个sequence，走入该分支，一定是1
                 mask_count = logical_remain_page_id.count('M')
                 # 对应可以找到该page填充的token数目
                 fill_token_size = self.block_size - mask_count
                 # 改写先前对应token的映射
-                self.sequence_page_table[-fill_token_size:] = [physical_update_page_id] * fill_token_size
+                self.sequence_page_table[layer][-fill_token_size:] = [physical_update_page_id] * fill_token_size
                 # 将当前生成token对应的物理页添加到page table中
-                self.sequence_page_table.append(physical_update_page_id)
+                self.sequence_page_table[layer].append(physical_update_page_id)
 
                 # 检查先前的物理页是否有别的引用,如果没有
-                if self.page_usage[physical_current_page_id] == 0:
+                if self.page_usage[layer][physical_current_page_id] == 0:
                    # 将先前的物理页放入空闲物理页队列中
-                   self.free_page_queue.enqueue_right(physical_current_page_id)
+                   self.free_page_queue[layer].enqueue_right(physical_current_page_id)
                    # 删除掉对应的逻辑页--物理页映射
-                   del self.page_map[logical_remain_page_id]
-                   del self.remain_pages[0]
+                   del self.page_map[layer][logical_remain_page_id]
+                   del self.remain_pages[layer][0]
             else: # 如果没有, 往未填满的page中插入
                 # 将数据插入page pool对应的位置当中
-                self.k_cache_pool[self.page_map[logical_remain_page_id], :, :, first_masked_pos, :] = k_data
-                self.v_cache_pool[self.page_map[logical_remain_page_id], :, :, first_masked_pos] = v_data
+                self.k_cache_pool[layer][self.page_map[layer][logical_remain_page_id], :, :, first_masked_pos, :] = k_data
+                self.v_cache_pool[layer][self.page_map[layer][logical_remain_page_id], :, :, first_masked_pos] = v_data
                 # 删除旧的逻辑页面id -- 物理页id映射，因为逻辑页面id要更换
-                del self.page_map[logical_remain_page_id]
+                del self.page_map[layer][logical_remain_page_id]
                 # 更新逻辑页id的映射
-                self.page_map[new_page_id] = physical_current_page_id
-                self.sequence_page_table.append(physical_current_page_id)
+                self.page_map[layer][new_page_id] = physical_current_page_id
+                self.sequence_page_table[layer].append(physical_current_page_id)
                 # 说明当前逻辑页已被填满
                 if new_page_id.count('M') == 0:
-                    del self.remain_pages[0]
+                    del self.remain_pages[layer][0]
         else: # 如果没有，表示所有的物理页均已填满，要重新申请一个物理页
             # 设置新申请物理页的逻辑页id
             current_block_id = [str(current_token_id)] + ['M'] * (self.block_size - 1)
@@ -246,22 +257,23 @@ class PageTableManager:
 
             # 将对应的逻辑页追加到remain_pages中去
             if 'M' in logical_page_id:
-                self.remain_pages.append(logical_page_id)
+                self.remain_pages[layer].append(logical_page_id)
             # 申请物理页
-            physical_page_idx = self.allocate_page(logical_page_id)
+            physical_page_idx = self.allocate_page(layer, logical_page_id)
             if physical_page_idx == -1:
                 raise ValueError("Allocate memory out of max page size, Failed to allocate page for block:", physical_page_idx)
             # 将数据插入page pool对应的位置当中
-            self.k_cache_pool[physical_page_idx, :, :, 0, :] = k_data
-            self.v_cache_pool[physical_page_idx, :, :, 0] = v_data
-            self.sequence_page_table.append(physical_page_idx)
+            self.k_cache_pool[layer][physical_page_idx, :, :, 0, :] = k_data
+            self.v_cache_pool[layer][physical_page_idx, :, :, 0] = v_data
+            self.sequence_page_table[layer].append(physical_page_idx)
             
 
 # Helper function to initialize manager
-def init_manager(block_size=2, num_head=2, headsize=4, initial_pages=2, max_pages=16, dtype=torch.float32, x_factor=2):
+def init_manager(block_size=2, num_head=2, headsize=4, initial_pages=2, max_pages=16, dtype=torch.float32, x_factor=2, num_layers=2):
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     return PageTableManager(block_size=block_size, num_head=num_head, headsize=headsize,
-                            initial_pages=initial_pages, max_pages=max_pages, dtype=dtype, x_factor=x_factor), device
+                            initial_pages=initial_pages, max_pages=max_pages, dtype=dtype,
+                            x_factor=x_factor, num_layers=num_layers), device
 
 def init_tensor(token_idx_list, init_one=False):
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -287,63 +299,66 @@ def test_free_page_queue():
     print("FreePageQueue tests passed.")
 
 def test_allocate_page():
-    manager, _ = init_manager(initial_pages=5, max_pages=10)
+    manager, _ = init_manager(initial_pages=5, max_pages=10, num_layers=3)
+    layer = 0
     page_id = "page1"
-    allocated_page = manager.allocate_page(page_id)
+    allocated_page = manager.allocate_page(layer, page_id)
     assert allocated_page != -1, "Page allocation failed: No valid page allocated"
-    assert manager.page_map[page_id] == allocated_page, "Page allocation failed: Incorrect page mapping"
-    print("allocate_page test passed.")
+    assert manager.page_map[layer][page_id] == allocated_page, "Page allocation failed: Incorrect page mapping"
+    print("allocate_page test passed for layer.")
 
 def test_prefill():
     manager, device = init_manager()
     token_idx_list = [1, 2, 3, 4, 5, 6]
     k_data, v_data = init_tensor(token_idx_list, init_one=True)
-    manager.prefill(token_idx_list, k_data, v_data)
+    layer = 1
+    manager.prefill(layer, token_idx_list, k_data, v_data)
     
-    for page_id, idx in manager.page_map.items():
-        assert (manager.k_cache_pool[idx] == 1).all(), f"Prefill failed: k_cache_pool Data mismatch on page {page_id}"
-        assert (manager.v_cache_pool[idx] == 1).all(), f"Prefill failed: v_cache_pool Data mismatch on page {page_id}"
-    print("Prefill test passed.")
+    for page_id, idx in manager.page_map[layer].items():
+        assert (manager.k_cache_pool[layer][idx] == 1).all(), f"Prefill failed: k_cache_pool Data mismatch on page {page_id}"
+        assert (manager.v_cache_pool[layer][idx] == 1).all(), f"Prefill failed: v_cache_pool Data mismatch on page {page_id}"
+    print("Prefill test passed for layer.")
 
 def test_decode_fill_page():
     torch.manual_seed(1999)
     manager, device = init_manager()
+    layer = 1
     token_idx_list = [1, 2, 3, 4, 5]
     k_data, v_data = init_tensor(token_idx_list)
-    manager.prefill(token_idx_list, k_data, v_data)
+    manager.prefill(layer, token_idx_list, k_data, v_data)
     
-    print(manager.sequence_page_table)
+    print(manager.sequence_page_table[layer])
     
     new_token_idx = [1, 2, 3, 4, 5, 6]
     token_data_k = torch.randn((2, 4), device=device, dtype=torch.float32)
     token_data_v = torch.randn((2, 4), device=device, dtype=torch.float32)
     token_data_k = token_data_k.view(1, 1, 2, 4)
     token_data_v = token_data_v.view(1, 1, 2, 4)
-    manager.decode(new_token_idx, token_data_k, token_data_v)
+    manager.decode(layer, new_token_idx, token_data_k, token_data_v)
 
-    print(manager.sequence_page_table)
+    print(manager.sequence_page_table[layer])
     
     logical_page_id = "5#6@4#5"
-    physical_page_idx = manager.page_map.get(logical_page_id, -1)
+    physical_page_idx = manager.page_map[layer].get(logical_page_id, -1)
     
     token_data_k = token_data_k.view(2, 2, 2)
     token_data_v = token_data_v.view(2, 4)
     
     assert physical_page_idx != -1, "Decode failed: No allocated page for new token."
-    assert (manager.k_cache_pool[physical_page_idx, :, :, 1, :] == token_data_k).all(), "Decode failed: Data mismatch on decoded page"
-    assert (manager.v_cache_pool[physical_page_idx, :, :, 1] == token_data_v).all(), "Decode failed: Data mismatch on decoded page"
-    print("Decode fill reamin page test passed.")
+    assert (manager.k_cache_pool[layer][physical_page_idx, :, :, 1, :] == token_data_k).all(), "Decode failed: Data mismatch on decoded page"
+    assert (manager.v_cache_pool[layer][physical_page_idx, :, :, 1] == token_data_v).all(), "Decode failed: Data mismatch on decoded page"
+    print("Decode fill remain page test passed for layer.")
 
 def test_decode_reuse():
     torch.manual_seed(1999)
     manager, device = init_manager()
-    
+    layer = 1
     vocab_size, embedding_dim = 10, 4
     embeddings = torch.randn(vocab_size, embedding_dim, device=device, dtype=torch.float32)
     token_idx_list = [1, 2, 3, 4, 3]
     k_data, v_data = init_tensor(token_idx_list)
-    manager.prefill(token_idx_list, k_data, v_data)
-    print(manager.sequence_page_table)
+    manager.prefill(layer, token_idx_list, k_data, v_data)
+    print(manager.sequence_page_table[layer])
     
     new_token_id = 4
     token_idx_list.append(new_token_id)
@@ -351,32 +366,32 @@ def test_decode_reuse():
     token_data_v = torch.randn((2, 4), device=device, dtype=torch.float32)
     token_data_k = token_data_k.view(1, 1, 2, 4)
     token_data_v = token_data_v.view(1, 1, 2, 4)
-    manager.decode(token_idx_list, token_data_k, token_data_v)
-    print(manager.sequence_page_table)
+    manager.decode(layer, token_idx_list, token_data_k, token_data_v)
+    print(manager.sequence_page_table[layer])
     
     logical_page_id = "3#4@4#5"
-    physical_page_idx = manager.page_map.get(logical_page_id, -1)
+    physical_page_idx = manager.page_map[layer].get(logical_page_id, -1)
     
     token_data_k = token_data_k.view(2, 2, 2)
     token_data_v = token_data_v.view(2, 4)
     
     assert physical_page_idx != -1, "Decode reuse failed: No valid page allocated."
-    assert 2 not in manager.free_page_queue.free_page_queue, "Decode reuse failed: Expected 2 not in manager.free_page_queue.free_page_queue."
-    assert (manager.k_cache_pool[physical_page_idx, :, :, 1, :] == token_data_k).all(), "Decode failed: Data mismatch on decoded page"
-    assert (manager.v_cache_pool[physical_page_idx, :, :, 1] == token_data_v).all(), "Decode failed: Data mismatch on decoded page"
-    print("Decode reuse test passed.")
+    assert 2 not in manager.free_page_queue[layer].free_page_queue, "Decode reuse failed: Expected 2 not in manager.free_page_queue[layer].free_page_queue."
+    assert (manager.k_cache_pool[layer][physical_page_idx, :, :, 1, :] == token_data_k).all(), "Decode failed: Data mismatch on decoded page"
+    assert (manager.v_cache_pool[layer][physical_page_idx, :, :, 1] == token_data_v).all(), "Decode failed: Data mismatch on decoded page"
+    print("Decode reuse test passed for layer.")
 
 
 def test_decode_new_page():
     torch.manual_seed(1999)
     manager, device = init_manager()
-    
+    layer = 1
     vocab_size, embedding_dim = 10, 4
     embeddings = torch.randn(vocab_size, embedding_dim, device=device, dtype=torch.float32)
     token_idx_list = [1, 2, 3, 4]
     k_data, v_data = init_tensor(token_idx_list)
-    manager.prefill(token_idx_list, k_data, v_data)
-    print(manager.sequence_page_table)
+    manager.prefill(layer, token_idx_list, k_data, v_data)
+    print(manager.sequence_page_table[layer])
     
     new_token_id = 5
     token_idx_list.append(new_token_id)
@@ -384,19 +399,19 @@ def test_decode_new_page():
     token_data_v = torch.randn((2, 4), device=device, dtype=torch.float32)
     token_data_k = token_data_k.view(1, 1, 2, 4)
     token_data_v = token_data_v.view(1, 1, 2, 4)
-    manager.decode(token_idx_list, token_data_k, token_data_v)
-    print(manager.sequence_page_table)
+    manager.decode(layer, token_idx_list, token_data_k, token_data_v)
+    print(manager.sequence_page_table[layer])
 
     logical_page_id = "5#M@4#5"
-    physical_page_idx = manager.page_map.get(logical_page_id, -1)
+    physical_page_idx = manager.page_map[layer].get(logical_page_id, -1)
     
     token_data_k = token_data_k.view(2, 2, 2)
     token_data_v = token_data_v.view(2, 4)
     
     assert physical_page_idx != -1, "Decode failed: No valid page allocated."
-    assert (manager.k_cache_pool[physical_page_idx, :, :, 0, :] == token_data_k).all(), "Decode failed: Data mismatch on decoded page"
-    assert (manager.v_cache_pool[physical_page_idx, :, :, 0] == token_data_v).all(), "Decode failed: Data mismatch on decoded page"
-    print("Decode new page test passed.")
+    assert (manager.k_cache_pool[layer][physical_page_idx, :, :, 0, :] == token_data_k).all(), "Decode failed: Data mismatch on decoded page"
+    assert (manager.v_cache_pool[layer][physical_page_idx, :, :, 0] == token_data_v).all(), "Decode failed: Data mismatch on decoded page"
+    print("Decode new page test passed for layer.")
 
 
 if __name__ == "__main__":

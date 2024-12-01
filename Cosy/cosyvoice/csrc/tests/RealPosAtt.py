@@ -367,6 +367,8 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         
         block_size = 16
+        num_layers = 2
+        current_layer = 1
         
         key_cache = key_cache.transpose(1, 2)   # [1, 16, 10, 64]  -- > [1, 10, 16, 64] 
         value_cache = value_cache.transpose(1, 2)   # [1, 16, 10, 64] -- > [1, 10, 16, 64] 
@@ -379,9 +381,9 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         else:
             raise ValueError("dtype must be float16 or float32")
         cache_manger = PageTableManager(block_size=block_size, num_head=num_heads, headsize=head_size,
-                                       initial_pages=16, max_pages=512, dtype=query.dtype, x_factor=x_factor)
+                                       initial_pages=16, max_pages=512, dtype=query.dtype, x_factor=x_factor, num_layers=num_layers)
         
-        cache_manger.prefill(kv_indices, key_cache, value_cache)
+        cache_manger.prefill(current_layer, kv_indices, key_cache, value_cache)
     
         q, k, v = self.forward_qkv(query, key, value)
         q = q.transpose(1, 2)  # [1, 1, 16, 64]
@@ -409,12 +411,12 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         v = v.transpose(1, 2)
         
         kv_indices.append(kv_current_index)
-        cache_manger.decode(kv_indices, k, v)
+        cache_manger.decode(current_layer, kv_indices, k, v)
         
-        #cache_manger.print_page_Tensor()
+        #cache_manger.print_page_Tensor(current_layer)
         
         
-        key_cache, value_cache = cache_manger.get_cached_pages()
+        key_cache, value_cache = cache_manger.get_cached_pages(current_layer)
         
         scale = float(1.0 / (head_size ** 0.5))
         
@@ -423,7 +425,7 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         context_lens = torch.tensor(context_lens, dtype=torch.int, device=device)
         
         # 同一个sequence下： key_cache 和 value_cache 的 block_table是相同的 
-        block_table = cache_manger.sequence_page_table
+        block_table = cache_manger.sequence_page_table[current_layer]
         
         block_tables = []
         block_tables.append(block_table)
