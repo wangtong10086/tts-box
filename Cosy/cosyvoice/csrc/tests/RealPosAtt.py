@@ -351,6 +351,7 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
     
     def infer(
         self,
+        dtype:str,
         device: str,
         num_heads: int,
         head_size: int,
@@ -371,7 +372,12 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         value_cache = value_cache.transpose(1, 2)   # [1, 16, 10, 64] -- > [1, 10, 16, 64] 
         
         # 16 / sizeof(dtype)
-        x_factor = 4
+        if dtype == torch.float16 or dtype == torch.bfloat16:
+            x_factor = 8
+        elif dtype == torch.float32:
+            x_factor = 4
+        else:
+            raise ValueError("dtype must be float16 or float32")
         cache_manger = PageTableManager(block_size=block_size, num_head=num_heads, headsize=head_size,
                                        initial_pages=16, max_pages=512, dtype=query.dtype, x_factor=x_factor)
         
@@ -457,7 +463,7 @@ def test_att():
     # 设置随机种子
     torch.manual_seed(1999)
     
-    dtype = torch.float32
+    dtype = torch.float16
     
     vocab_size=5000
     embedding_dim=1024
@@ -475,7 +481,7 @@ def test_att():
     head_num = dim // head_size
 
     # 创建 RelPositionMultiHeadedAttention 的实例
-    attention_layer = RelPositionMultiHeadedAttention(n_head=head_num, n_feat=dim, dropout_rate=dropout_rate).to(device)
+    attention_layer = RelPositionMultiHeadedAttention(n_head=head_num, n_feat=dim, dropout_rate=dropout_rate).to(device, dtype=dtype)
 
     # 从 embeddings 中获取 query
     query_indices = torch.randint(0, vocab_size, (batch_size, time1)).to(device)  # 随机生成查询词汇索引
@@ -492,7 +498,7 @@ def test_att():
 
     # 创建其他必要的张量
     mask = torch.ones(batch_size, 1, time2).to(device)     # Mask tensor (all ones)
-    pos_emb = torch.rand(batch_size, 2*cache_t+1, dim).to(device)  # Positional embedding tensor
+    pos_emb = torch.rand(batch_size, 2*cache_t+1, dim).to(device, dtype=dtype)  # Positional embedding tensor
 
     # 调用注意力层的 forward 方法
     output, _, _ = attention_layer(query, query, query, mask, pos_emb, key_cache, value_cache)
@@ -505,7 +511,7 @@ def test_att():
     vocab_indices = vocab_indices.view(-1)
     kv_indices = vocab_indices.tolist()
     num_tokens = cache_t+1
-    page_output = attention_layer.infer(device, head_num, head_size, query_indices, num_tokens, kv_indices, query, query, query, key_cache, value_cache, pos_emb)
+    page_output = attention_layer.infer(dtype, device, head_num, head_size, query_indices, num_tokens, kv_indices, query, query, query, key_cache, value_cache, pos_emb)
     print("page Output shape:", page_output.shape)
     print("page_output: ", page_output)
     

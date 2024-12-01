@@ -74,7 +74,7 @@ inline __device__ float convert_float(const T& value) {
 }
 
 template <>
-inline __device__ float convert_float(const __nv_bfloat16& value) {
+inline __device__ float convert_float(const __nv_bfloat16& value) {  
     return __bfloat162float(value);
 }
 
@@ -82,5 +82,6 @@ template <>
 inline __device__ float convert_float(const __half& value) {
     return __half2float(value);
 }
+
 
 } // namespace vllm

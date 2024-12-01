@@ -1,40 +1,36 @@
-matrix_ac:  tensor([[[ -5.8150,  -1.4389,  -6.2327, -11.5061,   1.9490,   2.9639,   5.2326,
-           -3.2419,  -3.3863,  -1.0081,   1.1972]],
+matrix_ac:  tensor([[[ -5.8125,  -1.4375,  -6.2305, -11.5078,   1.9502,   2.9668,   5.2305,
+           -3.2422,  -3.3828,  -1.0088,   1.1963]],
 
-        [[  1.6577,  -4.9502,  -8.4293,  -7.4154,   2.0052,  -2.6620,  -4.7434,
-            3.0114,  -1.3103,  -0.2511,   2.9247]]], device='cuda:0',
-       grad_fn=<SliceBackward0>)
-matrix_bd:  tensor([[[-0.0482, -1.2924, -0.4853, -2.0853, -1.2891, -2.0685, -1.4507,
-          -0.3026, -0.3252, -2.8310, -2.7260]],
+        [[  1.6592,  -4.9492,  -8.4297,  -7.4141,   2.0059,  -2.6641,  -4.7422,
+            3.0117,  -1.3066,  -0.2524,   2.9238]]], device='cuda:0',
+       dtype=torch.float16, grad_fn=<SliceBackward0>)
+matrix_bd:  tensor([[[-0.0480, -1.2930, -0.4871, -2.0859, -1.2891, -2.0684, -1.4512,
+          -0.3027, -0.3259, -2.8301, -2.7246]],
 
-        [[ 2.2068,  2.0556,  0.2549, -0.7069,  0.8599, -1.4596,  1.7223,
-           1.8441,  2.6099,  0.1993, -0.7369]]], device='cuda:0',
-       grad_fn=<SliceBackward0>)
-scores:  tensor([[[-0.7329, -0.3414, -0.8398, -1.6989,  0.0825,  0.1119,  0.4727,
-          -0.4431, -0.4639, -0.4799, -0.1911]],
+        [[ 2.2070,  2.0547,  0.2539, -0.7080,  0.8594, -1.4600,  1.7217,
+           1.8438,  2.6094,  0.1985, -0.7378]]], device='cuda:0',
+       dtype=torch.float16, grad_fn=<SliceBackward0>)
+scores:  tensor([[[-0.7324, -0.3413, -0.8398, -1.6992,  0.0826,  0.1123,  0.4724,
+          -0.4431, -0.4636, -0.4800, -0.1910]],
 
-        [[ 0.4831, -0.3618, -1.0218, -1.0153,  0.3581, -0.5152, -0.3776,
-           0.6069,  0.1625, -0.0065,  0.2735]]], device='cuda:0',
-       grad_fn=<SliceBackward0>)
+        [[ 0.4834, -0.3618, -1.0215, -1.0156,  0.3582, -0.5156, -0.3774,
+           0.6069,  0.1628, -0.0067,  0.2732]]], device='cuda:0',
+       dtype=torch.float16, grad_fn=<SliceBackward0>)
 Output shape: torch.Size([1, 1, 1024])
-page Output shape: torch.Size([1, 16, 64])
-token_idx:0 -- qk:-5.815015  token_idx:1 -- qk:-1.438892  token_idx:2 -- qk:-6.232719  token_idx:3 -- qk:-11.506061  token_idx:4 -- qk:1.948959  token_idx:5 -- qk:2.963914  
-token_idx:6 -- qk:5.232628  token_idx:7 -- qk:-3.241852  token_idx:8 -- qk:-3.386345  token_idx:9 -- qk:-1.008138  token_idx:10 -- qk:1.197171  token_idx:0 -- qk:1.657732  
-token_idx:1 -- qk:-4.950170  token_idx:2 -- qk:-8.429258  token_idx:3 -- qk:-7.415380  token_idx:4 -- qk:2.005166  token_idx:5 -- qk:-2.662029  token_idx:6 -- qk:-4.743384  
-token_idx:7 -- qk:3.011381  token_idx:8 -- qk:-1.310265  token_idx:9 -- qk:-0.251076  token_idx:10 -- qk:2.924739
+page Output shape: torch.Size([1, 1, 1024])
+token_idx:0 -- qk:-5.812744  token_idx:1 -- qk:-1.437634  token_idx:2 -- qk:-6.231362  token_idx:3 -- qk:-11.508998  token_idx:4 -- qk:1.949973  token_idx:5 -- qk:2.966877  
+token_idx:6 -- qk:5.231038  token_idx:7 -- qk:-3.243074  token_idx:8 -- qk:-3.383732  token_idx:9 -- qk:-1.009107  token_idx:10 -- qk:1.196310  token_idx:0 -- qk:1.658752  
+token_idx:1 -- qk:-4.948557  token_idx:2 -- qk:-8.429334  token_idx:3 -- qk:-7.414432  token_idx:4 -- qk:2.005688  token_idx:5 -- qk:-2.663678  token_idx:6 -- qk:-4.742355  
+token_idx:7 -- qk:3.011788  token_idx:8 -- qk:-1.306641  token_idx:9 -- qk:-0.252336  token_idx:10 -- qk:2.924736
 
-matrix_bd id:0 -- val:-0.048175  matrix_bd id:1 -- val:-1.292448  matrix_bd id:2 -- val:-0.485320  matrix_bd id:3 -- val:-2.085287  matrix_bd id:4 -- val:-1.289080  
-matrix_bd id:5 -- val:-2.068512  matrix_bd id:6 -- val:-1.450737  matrix_bd id:7 -- val:-0.302553  matrix_bd id:8 -- val:-0.325185  matrix_bd id:9 -- val:-2.830978  
-matrix_bd id:10 -- val:-2.726034  matrix_bd id:11 -- val:2.206811  matrix_bd id:12 -- val:2.055593  matrix_bd id:13 -- val:0.254888  matrix_bd id:14 -- val:-0.706942  
-matrix_bd id:15 -- val:0.859854  matrix_bd id:16 -- val:-1.459617  matrix_bd id:17 -- val:1.722349  matrix_bd id:18 -- val:1.844102  matrix_bd id:19 -- val:2.609889  
-matrix_bd id:20 -- val:0.199317  matrix_bd id:21 -- val:-0.736903
-
-scale:0.125000
-logits id:0 -- val:2.140800  logits id:1 -- val:-5.311992  logits id:2 -- val:-9.451055  logits id:3 -- val:-8.430670  logits id:4 -- val:2.363294  
-logits id:5 -- val:-3.177235  logits id:6 -- val:-5.121014  logits id:7 -- val:3.618317  logits id:8 -- val:-1.147812  logits id:9 -- val:-0.257546  
-logits id:10 -- val:3.198218  logits id:11 -- val:0.000000  logits id:12 -- val:0.000000  logits id:13 -- val:0.000000  logits id:14 -- val:0.000000  
-logits id:15 -- val:0.000000  logits id:0 -- val:-6.547914  logits id:1 -- val:-1.780310  logits id:2 -- val:-7.072474  logits id:3 -- val:-13.204979  
-logits id:4 -- val:2.031444  logits id:5 -- val:3.075840  logits id:6 -- val:5.705364  logits id:7 -- val:-3.684902  logits id:8 -- val:-3.850286  
-logits id:9 -- val:-1.488028  logits id:10 -- val:1.006063  logits id:11 -- val:0.000000  logits id:12 -- val:0.000000  logits id:13 -- val:0.000000 
- logits id:14 -- val:0.000000  logits id:15 -- val:0.000000
-(base) PS E:\Codes\CosyVoice\cosyvoice\csrc>
+nqk id:0 --scale:0.125000 --add_val:-5.860779 -- val:-0.732597 --oqk:-5.812744 nqk id:1 --scale:0.125000 --add_val:-2.730603 -- val:-0.341325 --oqk:-1.437634 
+nqk id:2 --scale:0.125000 --add_val:-6.718423 -- val:-0.839803 --oqk:-6.231362 nqk id:3 --scale:0.125000 --add_val:-13.594935 -- val:-1.699367 --oqk:-11.508998 
+nqk id:4 --scale:0.125000 --add_val:0.660910 -- val:0.082614 --oqk:1.949973 nqk id:5 --scale:0.125000 --add_val:0.898518 -- val:0.112315 --oqk:2.966877 
+nqk id:6 --scale:0.125000 --add_val:3.779866 -- val:0.472483 --oqk:5.231038 nqk id:7 --scale:0.125000 --add_val:-3.545809 -- val:-0.443226 --oqk:-3.243074 
+nqk id:8 --scale:0.125000 --add_val:-3.709660 -- val:-0.463707 --oqk:-3.383732 nqk id:9 --scale:0.125000 --add_val:-3.839185 -- val:-0.479898 --oqk:-1.009107 
+nqk id:10 --scale:0.125000 --add_val:-1.528299 -- val:-0.191037 --oqk:1.196310 nqk id:0 --scale:0.125000 --add_val:3.865783 -- val:0.483223 --oqk:1.658752 
+nqk id:1 --scale:0.125000 --add_val:-2.893869 -- val:-0.361734 --oqk:-4.948557 nqk id:2 --scale:0.125000 --add_val:-8.175427 -- val:-1.021928 --oqk:-8.429334 
+nqk id:3 --scale:0.125000 --add_val:-8.122439 -- val:-1.015305 --oqk:-7.414432 nqk id:4 --scale:0.125000 --add_val:2.865063 -- val:0.358133 --oqk:2.005688 
+nqk id:5 --scale:0.125000 --add_val:-4.123639 -- val:-0.515455 --oqk:-2.663678 nqk id:6 --scale:0.125000 --add_val:-3.020676 -- val:-0.377584 --oqk:-4.742355 
+nqk id:7 --scale:0.125000 --add_val:4.855537 -- val:0.606942 --oqk:3.011788 nqk id:8 --scale:0.125000 --add_val:1.302734 -- val:0.162842 --oqk:-1.306641 
+nqk id:9 --scale:0.125000 --add_val:-0.053850 -- val:-0.006731 --oqk:-0.252336 nqk id:10 --scale:0.125000 --add_val:2.186944 -- val:0.273368 --oqk:2.924736

@@ -131,10 +131,10 @@ __global__ void xl_single_query_cached_kv_attention_kernel(
     q_vecs[i] = add(q_vecs[i], *reinterpret_cast<const Q_vec*>(pos_bias_u_ptr + vec_idx * VEC_SIZE));
     //if(threadIdx.x < 2 && blockIdx.x < 1)
     //{
-    //  float f_q = convert_float(q[seq_idx * q_stride + head_idx * HEAD_SIZE + vec_idx * VEC_SIZE]);
+    //  float f_q = convert_float(q[0]);
     //  float f_bias = convert_float(pos_bias_u[seq_idx * q_stride + head_idx * HEAD_SIZE + vec_idx * VEC_SIZE]);
     //  float f_ad = f_q + f_bias;
-    //  printf("i:%d -tid:%d- %f -- %f -- q:%f  ", i, threadIdx.x, f_q, f_bias, f_ad);
+    //  printf("i:%d -tid:%d- f_q:%f - f_bias:%f -- f_adq:%f  ", i, threadIdx.x, f_q, f_bias, f_ad);
     //}
         
   }
@@ -270,11 +270,12 @@ __global__ void xl_single_query_cached_kv_attention_kernel(
           //  if (threadIdx.x == 0)
           //    printf("\n");
           //}
-          qk = (scale*(qk+matrix_bd_val));
           //if(threadIdx.x < 32 && blockIdx.x <= 1)
           //{
-          //  printf("qk id:%d --scale:%f --add_val:%f -- val:%f --qk:%f ", token_idx, scale, add_val, (scale*add_val), qk);
+          //  printf("nqk id:%d --scale:%f --add_val:%f -- val:%f --oqk:%f ", token_idx, scale, add_val, (scale*add_val), qk);
           //}
+          qk = (scale*(qk+matrix_bd_val));
+          
         }
         // Store the partial reductions to shared memory.
         // NOTE(woosuk): It is required to zero out the masked logits.
@@ -633,7 +634,7 @@ void xl_single_query_cached_kv_attention(
   if (query.dtype() == at::ScalarType::Float) {
     CALL_XL_KERNEL_LAUNCHER_BLOCK_SIZE(float);
   } else if (query.dtype() == at::ScalarType::Half) {
-    CALL_XL_KERNEL_LAUNCHER_BLOCK_SIZE(uint16_t);
+    CALL_XL_KERNEL_LAUNCHER_BLOCK_SIZE(__half);
   } else if (query.dtype() == at::ScalarType::BFloat16) {
     CALL_XL_KERNEL_LAUNCHER_BLOCK_SIZE(__nv_bfloat16);
   } else {

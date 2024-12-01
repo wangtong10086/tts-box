@@ -590,7 +590,7 @@ void xl_single_query_cached_kv_attention(
   if (query.dtype() == at::ScalarType::Float) {
     CALL_XL_KERNEL_LAUNCHER_BLOCK_SIZE(float);
   } else if (query.dtype() == at::ScalarType::Half) {
-    CALL_XL_KERNEL_LAUNCHER_BLOCK_SIZE(uint16_t);
+    CALL_XL_KERNEL_LAUNCHER_BLOCK_SIZE(__half);
   } else if (query.dtype() == at::ScalarType::BFloat16) {
     CALL_XL_KERNEL_LAUNCHER_BLOCK_SIZE(__nv_bfloat16);
   } else {
