@@ -129,7 +129,6 @@ __global__ void xl_single_query_cached_kv_attention_kernel(
     // 30*4, 31*4, ..., 30*4, 31*4 loop 15
     q_vecs[i] = *reinterpret_cast<const Q_vec*>(q_ptr + vec_idx * VEC_SIZE);
     q_vecs[i] = add(q_vecs[i], *reinterpret_cast<const Q_vec*>(pos_bias_u_ptr + vec_idx * VEC_SIZE));
-        
   }
 
   // Memory planning.
@@ -156,7 +155,6 @@ __global__ void xl_single_query_cached_kv_attention_kernel(
   // token 0 1 2 3 4 5 6 7
   // warp  0 1 2 3 0 1 2 3
   for (int block_idx = warp_idx; block_idx < num_blocks; block_idx += NUM_WARPS) {
-    const int physical_block_number = block_table[block_idx]; // different warp mapping to different block
 
     // Load a key to registers.
     // Each thread in a thread group has a different part of the key.
@@ -174,6 +172,10 @@ __global__ void xl_single_query_cached_kv_attention_kernel(
       //32, 32, 33, 33, ..., 47, 47 warp 2
       //48, 48, 49, 49, ..., 63, 63 warp 3
       const int token_idx = block_idx * BLOCK_SIZE + physical_block_offset;
+
+      const int block_index = (token_idx >= context_len) ? 0 : token_idx;
+      const int physical_block_number = block_table[block_index]; // different warp mapping to different block
+
       K_vec k_vecs[NUM_VECS_PER_THREAD]; //k_vecs[16]
 
 #pragma unroll // 32 loops
@@ -236,6 +238,7 @@ __global__ void xl_single_query_cached_kv_attention_kernel(
         if (token_idx < context_len){
           float matrix_bd_val = convert_float(matrix_bd[matrix_bd_seq_base + token_idx]);
           qk = (scale*(qk+matrix_bd_val));
+          
         }
         // Store the partial reductions to shared memory.
         // NOTE(woosuk): It is required to zero out the masked logits.
@@ -311,8 +314,7 @@ __global__ void xl_single_query_cached_kv_attention_kernel(
   }
 
   for (int block_idx = warp_idx; block_idx < num_blocks; block_idx += NUM_WARPS) {
-    // shared one block table ?
-    const int physical_block_number = block_table[block_idx];
+    
     // (0, 1,..., 31, 0,...31, 0,...,31, 0,...,31) % 2 * 8
     // 0, 8, 0, 8, ..., 0, 8, 0, 8, ..., 0, 8, 0, 8, ..., 0, 8, 0, 8
     const int physical_block_offset = (lane % NUM_V_VECS_PER_ROW) * V_VEC_SIZE;
@@ -321,6 +323,9 @@ __global__ void xl_single_query_cached_kv_attention_kernel(
     // 32, 40, 32, 40,...32, 40 warp 2
     // 48, 56, 48, 56,...48, 56 warp 3
     const int token_idx = block_idx * BLOCK_SIZE + physical_block_offset;
+    // shared one block table ?
+    const int block_index = (token_idx >= context_len) ? 0 : token_idx;
+    const int physical_block_number = block_table[block_index];
     // different qk, l_vec one thread take a vector
     L_vec logits_vec;
     from_float(logits_vec, *reinterpret_cast<Float_L_vec*>(logits + token_idx));

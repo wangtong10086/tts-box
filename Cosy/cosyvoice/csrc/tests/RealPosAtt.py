@@ -5,7 +5,7 @@ import torch
 from torch import nn
 from page_manger import PageTableManager
 
-# import attention_cuda
+import attention_cuda
 
 class MultiHeadedAttention(nn.Module):
     """Multi-Head Attention layer.
@@ -338,19 +338,20 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         if matrix_ac.shape != matrix_bd.shape:   # do out of cuda kernel
             matrix_bd = self.rel_shift(matrix_bd)
             
-        #print("matrix_ac: ", matrix_ac[0, 0:2, :, :])
-        #print("matrix_bd: ", matrix_bd[0, 0:2, :, :])
+        #print("matrix_ac: ", matrix_ac[0, 0:1, :, :])
+        #print("matrix_bd: ", matrix_bd[0, 0:1, :, :])
         #print("matrix_bd: ", matrix_bd.shape) #[1, 16, 1, 11]
         scores = (matrix_ac + matrix_bd) / math.sqrt(
             self.d_k)  # (batch, head, time1, time2)
 
-        #print("scores: ", scores[0, 0:2, :, :])
+        #print("scores: ", scores[0, 0:1, :, :])
         return self.forward_attention(v, scores, mask), k, v
     
-    '''
+    
     def infer(
         self,
-        dtype:str,
+        current_layer:int,
+        block_size:int,
         device: str,
         num_heads: int,
         head_size: int,
@@ -362,25 +363,12 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         value: torch.Tensor,
         key_cache: torch.Tensor,
         value_cache: torch.Tensor,
-        pos_emb: torch.Tensor = torch.empty(0),
+        pos_emb: torch.Tensor,
+        cache_manger: PageTableManager
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        
-        block_size = 16
-        num_layers = 2
-        current_layer = 1
         
         key_cache = key_cache.transpose(1, 2)   # [1, 16, 10, 64]  -- > [1, 10, 16, 64] 
         value_cache = value_cache.transpose(1, 2)   # [1, 16, 10, 64] -- > [1, 10, 16, 64] 
-        
-        # 16 / sizeof(dtype)
-        if dtype == torch.float16 or dtype == torch.bfloat16:
-            x_factor = 8
-        elif dtype == torch.float32:
-            x_factor = 4
-        else:
-            raise ValueError("dtype must be float16 or float32")
-        cache_manger = PageTableManager(block_size=block_size, num_head=num_heads, headsize=head_size,
-                                       initial_pages=16, max_pages=512, dtype=query.dtype, x_factor=x_factor, num_layers=num_layers)
         
         cache_manger.prefill(current_layer, kv_indices, key_cache, value_cache)
     
@@ -410,10 +398,10 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         v = v.transpose(1, 2)
         
         kv_indices.append(kv_current_index)
+        
         cache_manger.decode(current_layer, kv_indices, k, v)
         
         #cache_manger.print_page_Tensor(current_layer)
-        
         
         key_cache, value_cache = cache_manger.get_cached_pages(current_layer)
         
@@ -449,14 +437,14 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         output = output.contiguous().view(1, -1, self.h * self.d_k)
         output = self.linear_out(output)
         return output
-    '''
+    
 
 def make_vocab(vocab_size, embedding_dim, device, dtype):
     embeddings = torch.randn(vocab_size, embedding_dim, device=device, dtype=dtype)
     return embeddings
       
         
-def test_att():
+def test_att_muti_layer():
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"device:{device}")
@@ -464,7 +452,7 @@ def test_att():
     # 设置随机种子
     torch.manual_seed(1999)
     
-    num_layers = 5
+    num_layers = 8
     dtype = torch.float16
     
     vocab_size=5000
@@ -478,7 +466,7 @@ def test_att():
     batch_size = 1  # Number of batches
     time1 = 1      # Length of the query
     time2 = 1      # Length of the query
-    cache_t = 10
+    cache_t = 66
     head_size = 64
     head_num = dim // head_size
 
@@ -510,20 +498,105 @@ def test_att():
     output = query
     for attention_layer in attention_layers:
         output, _, _ = attention_layer(output, output, output, mask, pos_emb, key_cache, value_cache)
-
+       
     # 打印输出和新缓存的形状
-    print("Output shape:", output.shape)           # 预期形状: (batch_size, time1, n_feat)
-    
-    print("output: ", output)
+    print("Output:", output)           # 预期形状: (batch_size, time1, n_feat)
     
     
     vocab_indices = vocab_indices.view(-1)
     kv_indices = vocab_indices.tolist()
     num_tokens = cache_t+1
-    #page_output = attention_layer.infer(dtype, device, head_num, head_size, query_indices, num_tokens, kv_indices, query, query, query, key_cache, value_cache, pos_emb)
-    #print("page Output shape:", page_output.shape)
-    #print("page_output: ", page_output)
     
+    # 16 / sizeof(dtype)
+    block_size = 16
+    num_heads = head_num
+    if dtype == torch.float16 or dtype == torch.bfloat16:
+            x_factor = 8
+    elif dtype == torch.float32:
+        x_factor = 4
+    else:
+        raise ValueError("dtype must be float16 or float32")
+    cache_manger = PageTableManager(block_size=block_size, num_head=num_heads, headsize=head_size,
+                                   initial_pages=16, max_pages=512, dtype=query.dtype, x_factor=x_factor, num_layers=num_layers)
+    page_output = query
+    for layer, attention_layer in enumerate(attention_layers):
+        page_output = attention_layer.infer(layer, block_size, device, head_num, head_size, query_indices, num_tokens, 
+                                            kv_indices, page_output, page_output, page_output, key_cache, value_cache, pos_emb, cache_manger)
+    print("page Output:", page_output)
+    
+
+
+def test_att_single_layer():
+    
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    print(f"device:{device}")
+    
+    # 设置随机种子
+    torch.manual_seed(1999)
+    num_layers = 1
+    
+    dtype = torch.float16
+    
+    vocab_size=5000
+    embedding_dim=1024
+    
+    embeddings = make_vocab(vocab_size=vocab_size, embedding_dim=embedding_dim, device=device, dtype=dtype)
+
+    # 定义 Multi-Head Attention 的参数
+    dim = embedding_dim     # dim
+    dropout_rate = 0.0  # Dropout rate
+    batch_size = 1  # Number of batches
+    time1 = 1      # Length of the query
+    time2 = 1      # Length of the query
+    cache_t = 66
+    head_size = 64
+    head_num = dim // head_size
+
+    # 创建 RelPositionMultiHeadedAttention 的实例
+    attention_layer = RelPositionMultiHeadedAttention(n_head=head_num, n_feat=dim, dropout_rate=dropout_rate).to(device, dtype=dtype)
+
+    # 从 embeddings 中获取 query
+    query_indices = torch.randint(0, vocab_size, (batch_size, time1)).to(device)  # 随机生成查询词汇索引
+    query = embeddings[query_indices].to(device).view(batch_size, time1, dim)  # 获取 query 嵌入
+
+    # 从 embeddings 中获取 key_cache 和 value_cache
+    vocab_indices = torch.randint(0, vocab_size, (batch_size, cache_t)).to(device)  # 随机生成词汇索引
+    key_embeddings = embeddings[vocab_indices].to(device)  # 获取 key 嵌入
+    value_embeddings = embeddings[vocab_indices].to(device)  # 获取 value 嵌入     
+
+    # 调整形状以匹配 key_cache 和 value_cache
+    key_cache = key_embeddings.view(1, head_num, cache_t, head_size)
+    value_cache = value_embeddings.view(1, head_num, cache_t, head_size)
+
+    # 创建其他必要的张量
+    mask = torch.ones(batch_size, 1, time2).to(device)     # Mask tensor (all ones)
+    pos_emb = torch.rand(batch_size, 2*cache_t+1, dim).to(device, dtype=dtype)  # Positional embedding tensor
+
+    # 调用注意力层的 forward 方法
+    output, _, _ = attention_layer(query, query, query, mask, pos_emb, key_cache, value_cache)
+
+    # 打印输出和新缓存的形状
+    #print("Output shape:", output.shape)           # 预期形状: (batch_size, time1, n_feat)
+    
+    print("output: ", output)
+    
+    vocab_indices = vocab_indices.view(-1)
+    kv_indices = vocab_indices.tolist()
+    num_tokens = cache_t+1
+    block_size = 16
+    num_heads = head_num
+    if dtype == torch.float16 or dtype == torch.bfloat16:
+            x_factor = 8
+    elif dtype == torch.float32:
+        x_factor = 4
+    else:
+        raise ValueError("dtype must be float16 or float32")
+    cache_manger = PageTableManager(block_size=block_size, num_head=num_heads, headsize=head_size,
+                                   initial_pages=16, max_pages=512, dtype=query.dtype, x_factor=x_factor, num_layers=num_layers)
+    page_output = attention_layer.infer(0, block_size, device, head_num, head_size, query_indices, num_tokens, kv_indices, 
+                                        query, query, query, key_cache, value_cache, pos_emb, cache_manger)
+    #print("page Output shape:", page_output.shape)
+    print("page_output: ", page_output)
 
 
 def test_shif():
@@ -542,7 +615,9 @@ def test_shif():
 
 if __name__ == '__main__':
     
-    test_att()
+    test_att_muti_layer()
+    
+    #test_att_single_layer()
     #test_shif()
     #test_mask()
     

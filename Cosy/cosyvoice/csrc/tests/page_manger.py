@@ -133,7 +133,7 @@ class PageTableManager:
         return self.k_cache_pool[layer], self.v_cache_pool[layer]
     
     def print_page_Tensor(self, layer):
-        if len(self.sequence_page_table[[layer]]) == 0:
+        if len(self.sequence_page_table[layer]) == 0:
             print("sequence_page_table is empty")
             return
         print("print k_cache_pool")
