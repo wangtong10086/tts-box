@@ -5,7 +5,7 @@ import torch
 from torch import nn
 from page_manger import PageTableManager
 
-import attention_cuda
+# import attention_cuda
 
 class MultiHeadedAttention(nn.Module):
     """Multi-Head Attention layer.
@@ -238,7 +238,6 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         x = x_padded[:, :, 1:].view_as(x)
         x = x[:, :, :, : x.size(-1) // 2 + 1]  # only keep the positions from 0 to time2
         return x
-    
    
     
 
@@ -308,7 +307,7 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
 
         # (batch, head, time1, d_k)
         #print("shape info")
-        print("q: ", q.shape)
+        #print("q: ", q.shape)
         #print(self.pos_bias_u.shape)
         #print("self.pos_bias_v: ", self.pos_bias_v.shape) # [16, 64]
         #print("self.pos_bias_u.shape: ", self.pos_bias_u.shape) # [16, 64]
@@ -348,7 +347,7 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         #print("scores: ", scores[0, 0:2, :, :])
         return self.forward_attention(v, scores, mask), k, v
     
-    
+    '''
     def infer(
         self,
         dtype:str,
@@ -450,7 +449,7 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         output = output.contiguous().view(1, -1, self.h * self.d_k)
         output = self.linear_out(output)
         return output
-        
+    '''
 
 def make_vocab(vocab_size, embedding_dim, device, dtype):
     embeddings = torch.randn(vocab_size, embedding_dim, device=device, dtype=dtype)
@@ -465,6 +464,7 @@ def test_att():
     # 设置随机种子
     torch.manual_seed(1999)
     
+    num_layers = 5
     dtype = torch.float16
     
     vocab_size=5000
@@ -482,8 +482,12 @@ def test_att():
     head_size = 64
     head_num = dim // head_size
 
+    attention_layers = nn.ModuleList([
+        RelPositionMultiHeadedAttention(n_head=head_num, n_feat=dim, dropout_rate=dropout_rate).to(device, dtype=dtype)
+        for _ in range(num_layers)
+    ])
     # 创建 RelPositionMultiHeadedAttention 的实例
-    attention_layer = RelPositionMultiHeadedAttention(n_head=head_num, n_feat=dim, dropout_rate=dropout_rate).to(device, dtype=dtype)
+    #attention_layer = RelPositionMultiHeadedAttention(n_head=head_num, n_feat=dim, dropout_rate=dropout_rate).to(device, dtype=dtype)
 
     # 从 embeddings 中获取 query
     query_indices = torch.randint(0, vocab_size, (batch_size, time1)).to(device)  # 随机生成查询词汇索引
@@ -503,19 +507,22 @@ def test_att():
     pos_emb = torch.rand(batch_size, 2*cache_t+1, dim).to(device, dtype=dtype)  # Positional embedding tensor
 
     # 调用注意力层的 forward 方法
-    output, _, _ = attention_layer(query, query, query, mask, pos_emb, key_cache, value_cache)
+    output = query
+    for attention_layer in attention_layers:
+        output, _, _ = attention_layer(output, output, output, mask, pos_emb, key_cache, value_cache)
 
     # 打印输出和新缓存的形状
     print("Output shape:", output.shape)           # 预期形状: (batch_size, time1, n_feat)
     
     print("output: ", output)
     
+    
     vocab_indices = vocab_indices.view(-1)
     kv_indices = vocab_indices.tolist()
     num_tokens = cache_t+1
-    page_output = attention_layer.infer(dtype, device, head_num, head_size, query_indices, num_tokens, kv_indices, query, query, query, key_cache, value_cache, pos_emb)
-    print("page Output shape:", page_output.shape)
-    print("page_output: ", page_output)
+    #page_output = attention_layer.infer(dtype, device, head_num, head_size, query_indices, num_tokens, kv_indices, query, query, query, key_cache, value_cache, pos_emb)
+    #print("page Output shape:", page_output.shape)
+    #print("page_output: ", page_output)
     
 
 

@@ -288,6 +288,20 @@ def init_tensor(token_idx_list, init_one=False):
     data_v = embeddings_v[token_idx_list].view(1, len(token_idx_list), 2, 4)
     return data_k, data_v
 
+def test_cpoy():
+    manager, device = init_manager()
+    layer = 1
+    token_idx_list = [1, 2, 3, 4, 5]
+    k_data, v_data = init_tensor(token_idx_list)
+    manager.prefill(layer, token_idx_list, k_data, v_data)
+    
+    print(f"Original data before update: {manager.k_cache_pool[layer][0,0,0,0,0]}")
+    k_cache, _ = manager.get_cached_pages(layer)
+    k_cache[0,0,0,0,0] = 999
+    print(f"Modified data: {k_cache[0,0,0,0,0]}")
+    print(f"Original data after update: {manager.k_cache_pool[layer][0,0,0,0,0]}")
+
+
 def test_free_page_queue():
     # Initialize queue with a capacity of 5
     queue = FreePageQueue(5)
@@ -418,6 +432,7 @@ if __name__ == "__main__":
     """
     Testing the functionality of the page manager.
     """
+    test_cpoy()
     test_free_page_queue()
     test_allocate_page()
     test_prefill()
