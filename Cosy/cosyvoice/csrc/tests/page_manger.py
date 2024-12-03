@@ -26,27 +26,28 @@ class PageTableManager:
         self.num_head = num_head
         self.headsize = headsize
         self.max_pages = max_pages
-        self.expansion_step = initial_expansion_step  # 初始扩展步长
-        self.current_capacity = initial_pages
+        self.num_layers = num_layers
         self.dtype = dtype
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.x_factor = x_factor
-        self.num_layers = num_layers
+        
+        self.expansion_step = {layer: initial_expansion_step for layer in range(self.num_layers)}  # 初始扩展步长
+        self.current_capacity = {layer: initial_pages for layer in range(self.num_layers)}
 
         # 页面池，初始化存储 k_cache 和 v_cache 的数据
         self.k_cache_pool = {
-            layer: torch.zeros((self.current_capacity, self.num_head, self.headsize // self.x_factor, self.block_size, self.x_factor),
+            layer: torch.zeros((self.current_capacity[layer], self.num_head, self.headsize // self.x_factor, self.block_size, self.x_factor),
                                device=self.device, dtype=self.dtype)
             for layer in range(self.num_layers)
         }
         self.v_cache_pool = {
-            layer: torch.zeros((self.current_capacity, self.num_head, self.headsize, self.block_size),
+            layer: torch.zeros((self.current_capacity[layer], self.num_head, self.headsize, self.block_size),
                                device=self.device, dtype=self.dtype)
             for layer in range(self.num_layers)
         }
         
         # 物理页的引用计数，初始时为0
-        self.page_usage = {layer: [0] * self.current_capacity for layer in range(self.num_layers)}
+        self.page_usage = {layer: [0] * self.current_capacity[layer] for layer in range(self.num_layers)}
         # 虚拟页--物理页映射表
         self.page_map = {layer: {} for layer in range(self.num_layers)}
         # 未完全填充的逻辑页编号列表
@@ -55,7 +56,7 @@ class PageTableManager:
         self.sequence_page_table = {layer: [] for layer in range(self.num_layers)}
         
         # 空闲 page 队列  -- 左侧出队，右侧入队
-        self.free_page_queue = {layer: FreePageQueue(self.current_capacity) for layer in range(self.num_layers)}
+        self.free_page_queue = {layer: FreePageQueue(self.current_capacity[layer]) for layer in range(self.num_layers)}
 
     def allocate_page(self, layer: int, page_id: str) -> int:
         """
@@ -67,7 +68,7 @@ class PageTableManager:
 
         page_idx = self.free_page_queue[layer].dequeue_left()
         if page_idx == -1:
-            if self.current_capacity >= self.max_pages:
+            if self.current_capacity[layer] >= self.max_pages:
                 logging.error(f"Layer {layer}: Page pool has reached maximum capacity.")
                 return -1
             self._expand_pool(layer)
@@ -82,14 +83,14 @@ class PageTableManager:
         """
         为指定层扩展页面池
         """
-        if self.current_capacity >= self.max_pages:
+        if self.current_capacity[layer] >= self.max_pages:
             logging.info(f"Layer {layer}: Page pool has reached maximum capacity.")
             return
 
         # 混合策略扩展步长
-        expansion_step = self.expansion_step if self.current_capacity <= 256 else min(16, self.max_pages - self.current_capacity)
-        new_capacity = min(self.current_capacity + expansion_step, self.max_pages)
-        additional_pages = new_capacity - self.current_capacity
+        expansion_step = self.expansion_step[layer] if self.current_capacity[layer] <= 256 else min(16, self.max_pages - self.current_capacity[layer])
+        new_capacity = min(self.current_capacity[layer] + expansion_step, self.max_pages)
+        additional_pages = new_capacity - self.current_capacity[layer]
 
         # 扩展 k_cache 和 v_cache 的页面池
         new_k_cache_pages = torch.zeros((additional_pages, self.num_head, self.headsize // self.x_factor, self.block_size, self.x_factor),
@@ -100,13 +101,13 @@ class PageTableManager:
         self.v_cache_pool[layer] = torch.cat((self.v_cache_pool[layer], new_v_cache_pages), dim=0)
 
         self.page_usage[layer].extend([0] * additional_pages)
-        self.free_page_queue[layer].batch_enqueue_right(range(self.current_capacity, new_capacity))
-        self.current_capacity = new_capacity
+        self.free_page_queue[layer].batch_enqueue_right(range(self.current_capacity[layer], new_capacity))
+        self.current_capacity[layer] = new_capacity
 
-        if self.current_capacity <= 256:
-            self.expansion_step *= 2
+        if self.current_capacity[layer] <= 256:
+            self.expansion_step[layer] *= 2
 
-        logging.info(f"Layer {layer}: Expanded page pool to new capacity: {self.current_capacity}, expansion_step: {expansion_step}")
+        logging.info(f"Layer {layer}: Expanded page pool to new capacity: {self.current_capacity[layer]}, expansion_step: {expansion_step}")
 
     def hash_block(self, block_token_idx: List[str], block_token_pos: List[str]) -> str:
         hashed_block_token_pos = '#'.join(block_token_pos)
@@ -163,6 +164,8 @@ class PageTableManager:
         k_data = reshaped_k_tensor.permute(1, 2, 0, 3) # [num_head, head_size // x_factor, seq_len, x_factor]
         v_data = v_data.permute(1, 2, 0) # [num_head, head_size, seq_len]
         
+        
+        #print("token_idx_list:", token_idx_list)
         # 划分 token_idx_list 为多个小块
         blocks = [list(map(str, token_idx_list[i:i + self.block_size])) for i in range(0, len(token_idx_list), self.block_size)]
 
@@ -185,6 +188,7 @@ class PageTableManager:
             # 对于每个块中的每个 token_idx，从 data 中提取对应的 token embedding
             start_pos = idx * self.block_size
             end_pos = min(start_pos + self.block_size, seq_len)
+            #print(f"idx: {idx} start_pos: {start_pos}, end_pos: {end_pos}")
             self.k_cache_pool[layer][physical_page_idx, :, :, :end_pos-start_pos, :] = k_data[:, :, start_pos:end_pos, :]
             self.v_cache_pool[layer][physical_page_idx, :, :, :end_pos-start_pos] = v_data[:, :, start_pos:end_pos]
     

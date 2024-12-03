@@ -355,22 +355,14 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         device: str,
         num_heads: int,
         head_size: int,
-        kv_current_index: int,
         num_tokens: int,
         kv_indices: list,
         query: torch.Tensor,
         key: torch.Tensor,
         value: torch.Tensor,
-        key_cache: torch.Tensor,
-        value_cache: torch.Tensor,
         pos_emb: torch.Tensor,
         cache_manger: PageTableManager
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        
-        key_cache = key_cache.transpose(1, 2)   # [1, 16, 10, 64]  -- > [1, 10, 16, 64] 
-        value_cache = value_cache.transpose(1, 2)   # [1, 16, 10, 64] -- > [1, 10, 16, 64] 
-        
-        cache_manger.prefill(current_layer, kv_indices, key_cache, value_cache)
     
         q, k, v = self.forward_qkv(query, key, value)
         q = q.transpose(1, 2)  # [1, 1, 16, 64]
@@ -396,8 +388,6 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         q = torch.squeeze(q, dim=1) # [1, 16, 64]
         k = k.transpose(1, 2)
         v = v.transpose(1, 2)
-        
-        kv_indices.append(kv_current_index)
         
         cache_manger.decode(current_layer, kv_indices, k, v)
         
@@ -466,7 +456,7 @@ def test_att_muti_layer():
     batch_size = 1  # Number of batches
     time1 = 1      # Length of the query
     time2 = 1      # Length of the query
-    cache_t = 66
+    cache_t = 256
     head_size = 64
     head_num = dim // head_size
 
@@ -474,8 +464,6 @@ def test_att_muti_layer():
         RelPositionMultiHeadedAttention(n_head=head_num, n_feat=dim, dropout_rate=dropout_rate).to(device, dtype=dtype)
         for _ in range(num_layers)
     ])
-    # 创建 RelPositionMultiHeadedAttention 的实例
-    #attention_layer = RelPositionMultiHeadedAttention(n_head=head_num, n_feat=dim, dropout_rate=dropout_rate).to(device, dtype=dtype)
 
     # 从 embeddings 中获取 query
     query_indices = torch.randint(0, vocab_size, (batch_size, time1)).to(device)  # 随机生成查询词汇索引
@@ -519,9 +507,13 @@ def test_att_muti_layer():
     cache_manger = PageTableManager(block_size=block_size, num_head=num_heads, headsize=head_size,
                                    initial_pages=16, max_pages=512, dtype=query.dtype, x_factor=x_factor, num_layers=num_layers)
     page_output = query
+    kv_indices.append(query_indices)
+    key_cache = key_cache.transpose(1, 2)   # [1, 16, 10, 64]  -- > [1, 10, 16, 64] 
+    value_cache = value_cache.transpose(1, 2)   # [1, 16, 10, 64] -- > [1, 10, 16, 64] 
     for layer, attention_layer in enumerate(attention_layers):
-        page_output = attention_layer.infer(layer, block_size, device, head_num, head_size, query_indices, num_tokens, 
-                                            kv_indices, page_output, page_output, page_output, key_cache, value_cache, pos_emb, cache_manger)
+        cache_manger.prefill(layer, kv_indices, key_cache, value_cache)
+        page_output = attention_layer.infer(layer, block_size, device, head_num, head_size, num_tokens, kv_indices, page_output, 
+                                            page_output, page_output, pos_emb, cache_manger)
     print("page Output:", page_output)
     
 
@@ -575,9 +567,6 @@ def test_att_single_layer():
     # 调用注意力层的 forward 方法
     output, _, _ = attention_layer(query, query, query, mask, pos_emb, key_cache, value_cache)
 
-    # 打印输出和新缓存的形状
-    #print("Output shape:", output.shape)           # 预期形状: (batch_size, time1, n_feat)
-    
     print("output: ", output)
     
     vocab_indices = vocab_indices.view(-1)
@@ -595,7 +584,6 @@ def test_att_single_layer():
                                    initial_pages=16, max_pages=512, dtype=query.dtype, x_factor=x_factor, num_layers=num_layers)
     page_output = attention_layer.infer(0, block_size, device, head_num, head_size, query_indices, num_tokens, kv_indices, 
                                         query, query, query, key_cache, value_cache, pos_emb, cache_manger)
-    #print("page Output shape:", page_output.shape)
     print("page_output: ", page_output)
 
 
