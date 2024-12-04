@@ -7,7 +7,7 @@ import torch
 from torch import nn
 from page_manger import PageTableManager
 
-# import attention_cuda
+import attention_cuda
 
 class MultiHeadedAttention(nn.Module):
     """Multi-Head Attention layer.
@@ -273,7 +273,6 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         """
         q, k, v = self.forward_qkv(query, key, value)
         q = q.transpose(1, 2)  # (batch, time1, head, d_k)
-
         # NOTE(xcsong):
         #   when export onnx model, for 1st chunk, we feed
         #       cache(1, head, 0, d_k * 2) (16/-1, -1/-1, 16/0 mode)
@@ -350,7 +349,7 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         #print("scores: ", scores[0, 0:1, :, :])
         return self.forward_attention(v, scores, mask), k, v
     
-    '''
+    
     def infer(
         self,
         current_layer:int,
@@ -430,7 +429,7 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         output = output.contiguous().view(1, -1, self.h * self.d_k)
         output = self.linear_out(output)
         return output
-    '''
+    
 
 def make_vocab(vocab_size, embedding_dim, device, dtype):
     embeddings = torch.randn(vocab_size, embedding_dim, device=device, dtype=dtype)
@@ -473,7 +472,7 @@ def test_att_muti_layer():
     # 从 embeddings 中获取 key_cache 和 value_cache
     vocab_indices = torch.randint(0, vocab_size, (batch_size, cache_t)).to(device)  # 随机生成词汇索引
     key_embeddings = embeddings[vocab_indices].to(device)  # 获取 key 嵌入
-    value_embeddings = embeddings[vocab_indices].to(device)  # 获取 value 嵌入     
+    value_embeddings = embeddings[vocab_indices].to(device)  # 获取 value 嵌入  
 
     # 调整形状以匹配 key_cache 和 value_cache
     key_cache = key_embeddings.view(1, head_num, cache_t, head_size)
@@ -487,26 +486,26 @@ def test_att_muti_layer():
     k_cache_list = [key_cache for _ in range(num_layers)]
     v_cache_list = [value_cache for _ in range(num_layers)]
     pos_emb_copy = copy.deepcopy(pos_emb)
+    new_pos_list = [torch.rand(batch_size, 2, dim).to(device, dtype=dtype) for _ in range(decode_loop)]
+    query_indices_list = [torch.randint(0, vocab_size, (batch_size, time1)).to(device) for _ in range(decode_loop)]
     for loop in range(decode_loop):
         # 从 embeddings 中获取 query
-        query_indices = torch.randint(0, vocab_size, (batch_size, time1)).to(device)  # 随机生成查询词汇索引
-        query = embeddings[query_indices].to(device).view(batch_size, time1, dim)  # 获取 query 嵌入
+        query = embeddings[query_indices_list[loop]].to(device).view(batch_size, time1, dim)  # 获取 query 嵌入
 
         # 调用注意力层的 forward 方法
         output = query
-        
         for layer, attention_layer in enumerate(attention_layers):
             output, k_cache_list[layer], v_cache_list[layer] = attention_layer(output, output, output, mask, pos_emb_copy, k_cache_list[layer], v_cache_list[layer])
-            print(f"loop {loop} k_cache[{layer}] shape:", k_cache_list[layer].shape)
-        new_pos = torch.rand(batch_size, 2, dim).to(device, dtype=dtype)
-        pos_emb_copy = torch.cat([pos_emb_copy, new_pos], dim=1)
+            #print(f"loop {loop} k_cache[{layer}] shape:", k_cache_list[layer].shape)
+        pos_emb_copy = torch.cat([pos_emb_copy, new_pos_list[loop]], dim=1)
         # 打印输出和新缓存的形状
         print("Output:", output)           
     
-    '''
+    
     vocab_indices = vocab_indices.view(-1)
-    kv_indices = vocab_indices.tolist()
-    num_tokens = cache_t+1
+    kv_prefill_indices = vocab_indices.tolist()
+    kv_decode_indices = vocab_indices.tolist()
+    num_tokens = cache_t
     
     # 16 / sizeof(dtype)
     block_size = 16
@@ -519,16 +518,24 @@ def test_att_muti_layer():
         raise ValueError("dtype must be float16 or float32")
     cache_manger = PageTableManager(block_size=block_size, num_head=num_heads, headsize=head_size,
                                    initial_pages=16, max_pages=512, dtype=query.dtype, x_factor=x_factor, num_layers=num_layers)
-    page_output = query
-    kv_indices.append(query_indices)
     key_cache = key_cache.transpose(1, 2)   # [1, 16, 10, 64]  -- > [1, 10, 16, 64] 
     value_cache = value_cache.transpose(1, 2)   # [1, 16, 10, 64] -- > [1, 10, 16, 64] 
-    for layer, attention_layer in enumerate(attention_layers):
-        cache_manger.prefill(layer, kv_indices, key_cache, value_cache)
-        page_output = attention_layer.infer(layer, block_size, device, head_num, head_size, num_tokens, kv_indices, page_output, 
-                                            page_output, page_output, pos_emb, cache_manger)
-    print("page Output:", page_output)
-    '''
+    
+    for loop in range(decode_loop):
+        new_token_id = query_indices_list[loop].view(-1).tolist()[0]
+        kv_decode_indices.append(new_token_id) 
+        query = embeddings[query_indices_list[loop]].to(device).view(batch_size, time1, dim)  # 获取 query 嵌入
+        page_output = query
+        num_tokens += 1
+        
+        for layer, attention_layer in enumerate(attention_layers):
+            if loop == 0:
+                cache_manger.prefill(layer, kv_prefill_indices, key_cache, value_cache)
+            page_output = attention_layer.infer(layer, block_size, device, head_num, head_size, num_tokens, kv_decode_indices, page_output, 
+                                                page_output, page_output, pos_emb, cache_manger)
+        pos_emb = torch.cat([pos_emb, new_pos_list[loop]], dim=1)
+        print("page Output:", page_output)
+    
 
 '''
 def test_att_single_layer():

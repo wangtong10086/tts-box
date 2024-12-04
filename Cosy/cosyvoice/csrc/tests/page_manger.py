@@ -252,6 +252,8 @@ class PageTableManager:
                 # 说明当前逻辑页已被填满
                 if new_page_id.count('M') == 0:
                     del self.remain_pages[layer][0]
+                else: #否则，更新为新的逻辑页面id
+                    self.remain_pages[layer][0] = new_page_id
         else: # 如果没有，表示所有的物理页均已填满，要重新申请一个物理页
             # 设置新申请物理页的逻辑页id
             current_block_id = [str(current_token_id)] + ['M'] * (self.block_size - 1)
