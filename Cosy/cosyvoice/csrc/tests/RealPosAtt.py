@@ -1,11 +1,13 @@
+import copy
 import math
+from turtle import pos
 from typing import Tuple
 
 import torch
 from torch import nn
 from page_manger import PageTableManager
 
-import attention_cuda
+# import attention_cuda
 
 class MultiHeadedAttention(nn.Module):
     """Multi-Head Attention layer.
@@ -341,13 +343,14 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         #print("matrix_ac: ", matrix_ac[0, 0:1, :, :])
         #print("matrix_bd: ", matrix_bd[0, 0:1, :, :])
         #print("matrix_bd: ", matrix_bd.shape) #[1, 16, 1, 11]
+        #print("matrix_ac: ", matrix_ac.shape)
         scores = (matrix_ac + matrix_bd) / math.sqrt(
             self.d_k)  # (batch, head, time1, time2)
 
         #print("scores: ", scores[0, 0:1, :, :])
         return self.forward_attention(v, scores, mask), k, v
     
-    
+    '''
     def infer(
         self,
         current_layer:int,
@@ -427,7 +430,7 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         output = output.contiguous().view(1, -1, self.h * self.d_k)
         output = self.linear_out(output)
         return output
-    
+    '''
 
 def make_vocab(vocab_size, embedding_dim, device, dtype):
     embeddings = torch.randn(vocab_size, embedding_dim, device=device, dtype=dtype)
@@ -460,14 +463,12 @@ def test_att_muti_layer():
     head_size = 64
     head_num = dim // head_size
 
+    decode_loop = 8
+
     attention_layers = nn.ModuleList([
         RelPositionMultiHeadedAttention(n_head=head_num, n_feat=dim, dropout_rate=dropout_rate).to(device, dtype=dtype)
         for _ in range(num_layers)
     ])
-
-    # 从 embeddings 中获取 query
-    query_indices = torch.randint(0, vocab_size, (batch_size, time1)).to(device)  # 随机生成查询词汇索引
-    query = embeddings[query_indices].to(device).view(batch_size, time1, dim)  # 获取 query 嵌入
 
     # 从 embeddings 中获取 key_cache 和 value_cache
     vocab_indices = torch.randint(0, vocab_size, (batch_size, cache_t)).to(device)  # 随机生成词汇索引
@@ -482,15 +483,27 @@ def test_att_muti_layer():
     mask = torch.ones(batch_size, 1, time2).to(device)     # Mask tensor (all ones)
     pos_emb = torch.rand(batch_size, 2*cache_t+1, dim).to(device, dtype=dtype)  # Positional embedding tensor
 
-    # 调用注意力层的 forward 方法
-    output = query
-    for attention_layer in attention_layers:
-        output, _, _ = attention_layer(output, output, output, mask, pos_emb, key_cache, value_cache)
-       
-    # 打印输出和新缓存的形状
-    print("Output:", output)           # 预期形状: (batch_size, time1, n_feat)
+    # 简化初始每一层的k,v cache参数都相同
+    k_cache_list = [key_cache for _ in range(num_layers)]
+    v_cache_list = [value_cache for _ in range(num_layers)]
+    pos_emb_copy = copy.deepcopy(pos_emb)
+    for loop in range(decode_loop):
+        # 从 embeddings 中获取 query
+        query_indices = torch.randint(0, vocab_size, (batch_size, time1)).to(device)  # 随机生成查询词汇索引
+        query = embeddings[query_indices].to(device).view(batch_size, time1, dim)  # 获取 query 嵌入
+
+        # 调用注意力层的 forward 方法
+        output = query
+        
+        for layer, attention_layer in enumerate(attention_layers):
+            output, k_cache_list[layer], v_cache_list[layer] = attention_layer(output, output, output, mask, pos_emb_copy, k_cache_list[layer], v_cache_list[layer])
+            print(f"loop {loop} k_cache[{layer}] shape:", k_cache_list[layer].shape)
+        new_pos = torch.rand(batch_size, 2, dim).to(device, dtype=dtype)
+        pos_emb_copy = torch.cat([pos_emb_copy, new_pos], dim=1)
+        # 打印输出和新缓存的形状
+        print("Output:", output)           
     
-    
+    '''
     vocab_indices = vocab_indices.view(-1)
     kv_indices = vocab_indices.tolist()
     num_tokens = cache_t+1
@@ -515,9 +528,9 @@ def test_att_muti_layer():
         page_output = attention_layer.infer(layer, block_size, device, head_num, head_size, num_tokens, kv_indices, page_output, 
                                             page_output, page_output, pos_emb, cache_manger)
     print("page Output:", page_output)
-    
+    '''
 
-
+'''
 def test_att_single_layer():
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -585,7 +598,7 @@ def test_att_single_layer():
     page_output = attention_layer.infer(0, block_size, device, head_num, head_size, query_indices, num_tokens, kv_indices, 
                                         query, query, query, key_cache, value_cache, pos_emb, cache_manger)
     print("page_output: ", page_output)
-
+'''
 
 def test_shif():
     torch.manual_seed(1999)
