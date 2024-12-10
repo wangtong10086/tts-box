@@ -52,6 +52,8 @@ from cosyvoice.transformer.attention import (MultiHeadedAttention,
 from cosyvoice.transformer.embedding import EspnetRelPositionalEncoding
 from cosyvoice.transformer.subsampling import LegacyLinearNoSubsampling
 
+from cosyvoice.pages.page_manger import PageTableManager
+import time
 
 class BaseEncoder(torch.nn.Module):
 
@@ -259,6 +261,7 @@ class BaseEncoder(torch.nn.Module):
         elayers, cache_t1 = att_cache.size(0), att_cache.size(2)
         chunk_size = xs.size(1)
         attention_key_size = cache_t1 + chunk_size
+        #print(f"offset: {offset - cache_t1}, attention_key_size: {attention_key_size}, cache_t1: {cache_t1}")
         pos_emb = self.embed.position_encoding(offset=offset - cache_t1,
                                                size=attention_key_size)
         if required_cache_size < 0:
@@ -270,6 +273,7 @@ class BaseEncoder(torch.nn.Module):
         r_att_cache = []
         r_cnn_cache = []
         #print(f"att_cache: {att_cache.shape}")
+        #print(f"pos_emb: {pos_emb.shape}")
         for i, layer in enumerate(self.encoders):
             # NOTE(xcsong): Before layer.forward
             #   shape(att_cache[i:i + 1]) is (1, head, cache_t1, d_k * 2),
@@ -295,6 +299,54 @@ class BaseEncoder(torch.nn.Module):
         r_cnn_cache = torch.cat(r_cnn_cache, dim=0)
 
         return (xs, r_att_cache, r_cnn_cache)
+    
+    @torch.inference_mode()
+    def forward_page_chunk(
+        self,
+        cache_t1:int, #att_cache.size(2)
+        xs: torch.Tensor,
+        offset: int,
+        block_size:int,
+        device: str,
+        num_tokens: int,
+        kv_decode_indices: list,
+        cache_manger: PageTableManager
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+
+        
+        assert xs.size(0) == 1
+        #print(f"xs: {xs.shape}")
+        tmp_masks = torch.ones(1,
+                               xs.size(1),
+                               device=xs.device,
+                               dtype=torch.bool)
+        tmp_masks = tmp_masks.unsqueeze(1)
+        if self.global_cmvn is not None:
+            xs = self.global_cmvn(xs)
+        xs, pos_emb, _ = self.embed(xs, tmp_masks, offset)
+        chunk_size = xs.size(1)
+        attention_key_size = cache_t1 + chunk_size
+        #print(f"offset: {offset - cache_t1}, attention_key_size: {attention_key_size}, cache_t1: {cache_t1}, chunk_size:{chunk_size}")
+        pos_emb = self.embed.position_encoding(offset=offset - cache_t1,
+                                               size=attention_key_size)
+        
+        
+        start_time = time.time()  # 记录开始时间
+        for i, layer in enumerate(self.encoders):
+            xs = layer.infer(
+                xs,
+                pos_emb,
+                i,
+                block_size,
+                device,
+                num_tokens,
+                kv_decode_indices,
+                cache_manger)
+        if self.normalize_before:
+            xs = self.after_norm(xs)
+        return xs
+
+    
 
     @torch.jit.unused
     def forward_chunk_by_chunk(

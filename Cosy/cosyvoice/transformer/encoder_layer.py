@@ -19,7 +19,9 @@ from typing import Optional, Tuple
 
 import torch
 from torch import nn
+from cosyvoice.pages.page_manger import PageTableManager
 
+import time
 
 class TransformerEncoderLayer(nn.Module):
     """Encoder layer module.
@@ -104,6 +106,52 @@ class TransformerEncoderLayer(nn.Module):
 
         fake_cnn_cache = torch.zeros((0, 0, 0), dtype=x.dtype, device=x.device)
         return x, mask, new_att_cache, fake_cnn_cache
+
+    @torch.inference_mode()
+    def infer(
+        self,
+        x: torch.Tensor,
+        pos_emb: torch.Tensor,
+        current_layer:int,
+        block_size:int,
+        device: str,
+        num_tokens: int,
+        kv_decode_indices: list,
+        cache_manger: PageTableManager,
+    ) -> torch.Tensor:
+        """Compute encoded features.
+
+        Args:
+            x (torch.Tensor): (#batch, time, size)
+            mask (torch.Tensor): Mask tensor for the input (#batch, time，time),
+                (0, 0, 0) means fake mask.
+            pos_emb (torch.Tensor): just for interface compatibility
+                to ConformerEncoderLayer
+            att_cache (torch.Tensor): Cache tensor of the KEY & VALUE
+                (#batch=1, head, cache_t1, d_k * 2), head * d_k == size.
+        Returns:
+            torch.Tensor: Output tensor (#batch, time, size).
+            torch.Tensor: att_cache tensor,
+                (#batch=1, head, cache_t1 + time, d_k * 2).
+
+        """
+        residual = x
+        if self.normalize_before:
+            x = self.norm1(x)
+        # aat time 1.6, other time 0.6
+        x_att = self.self_attn.infer(current_layer, block_size, device, num_tokens, kv_decode_indices, x, x, x, pos_emb, cache_manger)
+        
+        x = residual + self.dropout(x_att)
+        if not self.normalize_before:
+            x = self.norm1(x)
+
+        residual = x
+        if self.normalize_before:
+            x = self.norm2(x)
+        x = residual + self.dropout(self.feed_forward(x))
+        if not self.normalize_before:
+            x = self.norm2(x)
+        return x
 
 
 class ConformerEncoderLayer(nn.Module):

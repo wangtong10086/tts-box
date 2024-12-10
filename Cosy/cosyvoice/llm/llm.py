@@ -19,6 +19,11 @@ from torch.nn.utils.rnn import pad_sequence, unpad_sequence
 from cosyvoice.utils.common import IGNORE_ID
 from cosyvoice.transformer.label_smoothing_loss import LabelSmoothingLoss
 from cosyvoice.utils.common import th_accuracy
+import copy
+
+from cosyvoice.pages.page_manger import PageTableManager
+
+import time
 
 
 class TransformerLM(torch.nn.Module):
@@ -270,6 +275,7 @@ class TransformerLM(torch.nn.Module):
 
         # 5. step by step decode
         print("step 5 decode!!!")
+        start_time_ms = time.perf_counter() * 1000  # 开始时间（毫秒）
         out_tokens = []
         offset = 0
         att_cache, cnn_cache = torch.zeros((0, 0, 0, 0), device=lm_input.device), torch.zeros((0, 0, 0, 0), device=lm_input.device)
@@ -280,7 +286,6 @@ class TransformerLM(torch.nn.Module):
         #print(f"cnn_cache: {cnn_cache.shape}")
         
         for i in range(max_len):
-            #print(f"lm_input: {lm_input}")
             #print(f"att_cache: {att_cache.shape}")
             y_pred, att_cache, cnn_cache = self.llm.forward_chunk(lm_input, offset=0, required_cache_size=-1, att_cache=att_cache, cnn_cache=cnn_cache,
                                                                   att_mask=torch.tril(torch.ones((1, lm_input.shape[1], lm_input.shape[1]), device=lm_input.device)).to(torch.bool))
@@ -295,11 +300,140 @@ class TransformerLM(torch.nn.Module):
             out_tokens.append(top_ids)
             offset += lm_input.size(1)
             lm_input = self.speech_embedding.weight[top_ids].reshape(1, 1, -1)
+        
+        end_time_ms = time.perf_counter() * 1000  # 结束时间（毫秒）
+        elapsed_time_ms = end_time_ms - start_time_ms  # 计算时间差（毫秒）
+        print(f"normal decode运行时间: {elapsed_time_ms:.6f} 毫秒")  
+        
         print("step 5 over!!!")
         speech_token = torch.tensor(out_tokens, dtype=torch.int64, device=device).unsqueeze(0)
         print(f"speech_token.shape: {speech_token.shape}")
+        print(f"inference_without_stream  speech_token: {speech_token}")
         return speech_token  # 返回完整的输出序列
 
+
+    @torch.inference_mode()
+    def inference_page_without_stream(
+            self,
+            text: torch.Tensor,
+            text_len: torch.Tensor,
+            prompt_text: torch.Tensor,
+            prompt_text_len: torch.Tensor,
+            prompt_speech_token: torch.Tensor,
+            prompt_speech_token_len: torch.Tensor,
+            embedding: torch.Tensor,
+            sampling: int = 25,
+            max_token_text_ratio: float = 20,
+            min_token_text_ratio: float = 2,
+    ) -> torch.Tensor:  # 注意这里不再返回生成器，而是返回完整的张量
+
+        device = text.device
+        text = torch.concat([prompt_text, text], dim=1)
+        kv_prefill_indices = [self.sos_eos, 99999] # emb defalt set 99999
+        kv_prefill_indices.extend(text.view(-1).tolist())
+        kv_prefill_indices.append(self.task_id)
+        kv_prefill_indices.extend(prompt_speech_token.view(-1).tolist())
+        kv_decode_indices = copy.deepcopy(kv_prefill_indices)
+        num_tokens = len(kv_decode_indices)
+        text_len += prompt_text_len
+        text = self.text_embedding(text)
+
+        # 1. encode text
+        print("step 1 encode text!!!")
+        text, text_len = self.encode(text, text_len)
+
+        # 2. encode embedding
+        print("step 2 encode embedding!!!")
+        if embedding.shape[0] != 0:
+            embedding = F.normalize(embedding, dim=1)
+            embedding = self.spk_embed_affine_layer(embedding)
+            embedding = embedding.unsqueeze(dim=1)
+        else:
+            embedding = torch.zeros(1, 0, self.llm_input_size, dtype=text.dtype).to(device)
+
+        # 3. concat llm_input
+        print("step 3 concat llm_input!!!")
+        sos_eos_emb = self.llm_embedding.weight[self.sos_eos].reshape(1, 1, -1)
+        task_id_emb = self.llm_embedding.weight[self.task_id].reshape(1, 1, -1)
+        if prompt_speech_token_len != 0:
+            prompt_speech_token_emb = self.speech_embedding(prompt_speech_token)
+        else:
+            prompt_speech_token_emb = torch.zeros(1, 0, self.llm_input_size, dtype=text.dtype).to(device)
+        lm_input = torch.concat([sos_eos_emb, embedding, text, task_id_emb, prompt_speech_token_emb], dim=1)
+
+        # 4. cal min/max_length
+        print("step 4 cal min/max_length!!!")
+        min_len = int((text_len - prompt_text_len) * min_token_text_ratio)
+        max_len = int((text_len - prompt_text_len) * max_token_text_ratio)
+
+        # 5. step by step decode
+        print("step 5 decode!!!")
+        start_time_ms = time.perf_counter() * 1000  # 开始时间（毫秒）
+        out_tokens = []
+        offset = 0
+        att_cache, cnn_cache = torch.zeros((0, 0, 0, 0), device=lm_input.device), torch.zeros((0, 0, 0, 0), device=lm_input.device)
+        
+        
+        block_size = 16
+        num_heads = self.llm.attention_heads
+        head_size = int(self.llm._output_size // self.llm.attention_heads)
+        num_layers = self.llm.num_blocks
+        offset=0
+        dtype = lm_input.dtype
+        if dtype == torch.float16 or dtype == torch.bfloat16:
+                x_factor = 8
+        elif dtype == torch.float32:
+            x_factor = 4
+        else:
+            raise ValueError("dtype must be float16 or float32")
+        cache_manger = PageTableManager(block_size=block_size, num_head=num_heads, headsize=head_size,
+                                   initial_pages=16, max_pages=512, dtype=dtype, x_factor=x_factor, num_layers=num_layers, initial_expansion_step=128)
+        
+        # first loop
+        y_pred, att_cache, _ = self.llm.forward_chunk(lm_input, offset, required_cache_size=-1, att_cache=att_cache, cnn_cache=cnn_cache,
+                                                      att_mask=torch.tril(torch.ones((1, lm_input.shape[1], lm_input.shape[1]), device=lm_input.device)).to(torch.bool))
+        logp = self.llm_decoder(y_pred[:, -1]).log_softmax(dim=-1)
+        top_ids = self.sampling_ids(logp.squeeze(dim=0), out_tokens, sampling, ignore_eos=True if min_len > 0 else False).item()
+        out_tokens.append(top_ids)
+        offset += lm_input.size(1)
+        lm_input = self.speech_embedding.weight[top_ids].reshape(1, 1, -1)
+        
+        key_cache, value_cache = torch.split(att_cache, att_cache.size(-1) // 2, dim=-1)
+        cache_t1 = key_cache.size(2)
+        key_cache = key_cache.transpose(1, 2)   # [1, 16, t, 64]  -- > [1, 10, t, 64] 
+        value_cache = value_cache.transpose(1, 2)   # [1, t, 10, 64] -- > [1, 10, t, 64] 
+        for layer in range(num_layers):
+            cache_manger.prefill(layer, kv_prefill_indices, key_cache[layer:layer + 1], value_cache[layer:layer + 1])
+        for i in range(max_len-1):
+            num_tokens += 1
+            #print(f"att_cache: {att_cache.shape}")
+            
+            y_pred = self.llm.forward_page_chunk(cache_t1, lm_input, offset, block_size, device, num_tokens, kv_decode_indices, cache_manger)
+            
+            logp = self.llm_decoder(y_pred[:, -1]).log_softmax(dim=-1)
+            #print(f"att_cache: {att_cache.shape}")
+            #print(f"logp: {logp}")
+            top_ids = self.sampling_ids(logp.squeeze(dim=0), out_tokens, sampling, ignore_eos=True if i < min_len else False).item()
+            #print(f"top_ids: {top_ids}")
+
+            if top_ids == self.speech_token_size:
+                break
+            cache_t1 += 1
+            kv_decode_indices.append(top_ids)
+            out_tokens.append(top_ids)
+            offset += lm_input.size(1)
+            lm_input = self.speech_embedding.weight[top_ids].reshape(1, 1, -1)
+        
+        end_time_ms = time.perf_counter() * 1000  # 结束时间（毫秒）
+        elapsed_time_ms = end_time_ms - start_time_ms  # 计算时间差（毫秒）
+        print(f"page decode运行时间: {elapsed_time_ms:.6f} 毫秒")    
+        
+        print("step 5 over!!!")
+        speech_token = torch.tensor(out_tokens, dtype=torch.int64, device=device).unsqueeze(0)
+        print(f"speech_token.shape: {speech_token.shape}")
+        print(f"speech_token: {speech_token}")
+        return speech_token  # 返回完整的输出序列
+        
 
 
 import numpy as np

@@ -24,6 +24,11 @@ from torch import nn
 import torch.nn.functional as F
 from cosyvoice.transformer.normalization import SpatialNorm
 
+from cosyvoice.pages.page_manger import PageTableManager
+import attention_cuda
+
+import time
+
 
 class MultiHeadedAttention(nn.Module):
     """Multi-Head Attention layer.
@@ -75,9 +80,6 @@ class MultiHeadedAttention(nn.Module):
         q = self.linear_q(query).view(n_batch, -1, self.h, self.d_k)
         k = self.linear_k(key).view(n_batch, -1, self.h, self.d_k)
         v = self.linear_v(value).view(n_batch, -1, self.h, self.d_k)
-        q = q.transpose(1, 2)  # (batch, head, time1, d_k)
-        k = k.transpose(1, 2)  # (batch, head, time2, d_k)
-        v = v.transpose(1, 2)  # (batch, head, time2, d_k)
 
         return q, k, v
 
@@ -170,6 +172,10 @@ class MultiHeadedAttention(nn.Module):
 
         """
         q, k, v = self.forward_qkv(query, key, value)
+        
+        q = q.transpose(1, 2)  # (batch, head, time1, d_k)
+        k = k.transpose(1, 2)  # (batch, head, time2, d_k)
+        v = v.transpose(1, 2)  # (batch, head, time2, d_k)
 
         # NOTE(xcsong):
         #   when export onnx model, for 1st chunk, we feed
@@ -285,6 +291,11 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         #print(f"cache: {cache.shape}") #torch.Size([1, 16, 355, 128])
         
         q, k, v = self.forward_qkv(query, key, value)
+        
+        q = q.transpose(1, 2)  # (batch, head, time1, d_k)
+        k = k.transpose(1, 2)  # (batch, head, time2, d_k)
+        v = v.transpose(1, 2)  # (batch, head, time2, d_k)
+        
         q = q.transpose(1, 2)  # (batch, time1, head, d_k)
 
         #print(f"q.shape: {q.shape}")
@@ -339,7 +350,7 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
        
         #print(q_with_bias_u.shape)  # same shape with q
         #print(q_with_bias_v.shape)  # same shape with q
-        print(p.shape)
+        #print(p.shape)
         matrix_bd = torch.matmul(q_with_bias_v, p.transpose(-2, -1))
         # NOTE(Xiang Lyu): Keep rel_shift since espnet rel_pos_emb is used
         # print(matrix_ac.shape, matrix_bd.shape) # torch.Size([1, 16, 355, 355]) torch.Size([1, 16, 355, 709])
@@ -347,13 +358,101 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         if matrix_ac.shape != matrix_bd.shape:  
             matrix_bd = self.rel_shift(matrix_bd)
 
-        print("matrix_ac: ", matrix_ac.shape)
-        print("matrix_bd: ", matrix_bd.shape)
+        #print("matrix_ac: ", matrix_ac.shape)
+        #print("matrix_bd: ", matrix_bd.shape)
         # print(matrix_ac.shape, matrix_bd.shape) # torch.Size([1, 16, 355, 355]) torch.Size([1, 16, 355, 355])
         scores = (matrix_ac + matrix_bd) / math.sqrt(
             self.d_k)  # (batch, head, time1, time2)
 
         return self.forward_attention(v, scores, mask), new_cache
+    
+    @torch.inference_mode()
+    def infer(
+        self,
+        current_layer:int,
+        block_size:int,
+        device: str,
+        num_tokens: int,
+        kv_indices: list,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        pos_emb: torch.Tensor,
+        cache_manger: PageTableManager
+    ) -> torch.Tensor:
+    
+        #start_time_ms = time.perf_counter() * 1000  # 开始时间（毫秒）
+    
+        q, k, v = self.forward_qkv(query, key, value)
+        
+        qk_shape = (1, self.h, num_tokens)
+        
+        q_with_bias_v = (q + self.pos_bias_v).transpose(1, 2) 
+        n_batch_pos = pos_emb.size(0)
+        p = self.linear_pos(pos_emb).view(n_batch_pos, -1, self.h, self.d_k)
+        p = p.transpose(1, 2) 
+        
+        matrix_bd = torch.matmul(q_with_bias_v, p.transpose(-2, -1)) 
+        
+        #print(f"page matrix_bd: {matrix_bd.shape}")
+        if qk_shape != matrix_bd.shape:
+            matrix_bd = self.rel_shift(matrix_bd) # [1, 16, 11] <--> [num_seqs, num_heads, context_len]
+        
+        matrix_bd = matrix_bd.contiguous().view(1, self.h, num_tokens)
+        
+        #end_time_ms = time.perf_counter() * 1000  # 结束时间（毫秒）
+        #elapsed_time_ms = end_time_ms - start_time_ms  # 计算时间差（毫秒）
+        #print(f"h1 op运行时间: {elapsed_time_ms:.6f} 毫秒")
+        
+        
+        #start_time_ms = time.perf_counter() * 1000 
+        #print(f"page matrix_bd: {matrix_bd}")
+        
+        q = torch.squeeze(q, dim=1) # [1, 16, 64]
+        
+        cache_manger.decode(current_layer, kv_indices, k, v)
+        
+        #cache_manger.print_page_Tensor(current_layer)
+        
+        key_cache, value_cache = cache_manger.get_cached_pages(current_layer)
+        
+        scale = float(1.0 / (self.d_k ** 0.5))
+        
+        context_lens = [num_tokens] # 生成一个长度为 num_tokens 的列表 context_lens，每个元素都是从 1 到 MAX_SEQ_LEN 之间的随机整数
+        max_context_len = max(context_lens)
+        context_lens = torch.tensor(context_lens, dtype=torch.int, device=device)
+        
+        # 同一个sequence下： key_cache 和 value_cache 的 block_table是相同的 
+        block_table = cache_manger.sequence_page_table[current_layer]
+        
+        block_tables = []
+        block_tables.append(block_table)
+        block_tables = torch.tensor(block_tables, dtype=torch.int, device=device)
+        
+        output = torch.empty(1, self.h, self.d_k, dtype=q.dtype, device=device)
+        
+        #end_time_ms = time.perf_counter() * 1000  # 结束时间（毫秒）
+        #elapsed_time_ms = end_time_ms - start_time_ms  # 计算时间差（毫秒）
+        #print(f"h2 op运行时间: {elapsed_time_ms:.6f} 毫秒")
+        
+        
+        attention_cuda.xl_single_query_cached_kv_attention(
+            output,
+            q,
+            key_cache,
+            value_cache,
+            self.pos_bias_u,
+            matrix_bd,
+            scale,
+            block_tables,
+            context_lens,
+            block_size,
+            max_context_len,
+        )
+        
+        output = output.contiguous().view(1, -1, self.h * self.d_k)
+        output = self.linear_out(output)
+        return output
     
     
     

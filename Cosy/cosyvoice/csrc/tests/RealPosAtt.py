@@ -355,8 +355,6 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         current_layer:int,
         block_size:int,
         device: str,
-        num_heads: int,
-        head_size: int,
         num_tokens: int,
         kv_indices: list,
         query: torch.Tensor,
@@ -369,7 +367,7 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         q, k, v = self.forward_qkv(query, key, value)
         q = q.transpose(1, 2)  # [1, 1, 16, 64]
         
-        qk_shape = (1, num_heads, num_tokens)
+        qk_shape = (1, self.h, num_tokens)
         
         q_with_bias_v = (q + self.pos_bias_v).transpose(1, 2) #[1, 16, 64]
         # print(f"page q_with_bias_v: {q_with_bias_v.shape}") # [1, 16, 1, 64]
@@ -383,7 +381,7 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         if qk_shape != matrix_bd.shape:
             matrix_bd = self.rel_shift(matrix_bd) # [1, 16, 11] <--> [num_seqs, num_heads, context_len]
         
-        matrix_bd = matrix_bd.contiguous().view(1, num_heads, num_tokens)
+        matrix_bd = matrix_bd.contiguous().view(1, self.h, num_tokens)
         
         #print(f"page matrix_bd: {matrix_bd}")
         
@@ -397,7 +395,7 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         
         key_cache, value_cache = cache_manger.get_cached_pages(current_layer)
         
-        scale = float(1.0 / (head_size ** 0.5))
+        scale = float(1.0 / (self.d_k ** 0.5))
         
         context_lens = [num_tokens] # 生成一个长度为 num_tokens 的列表 context_lens，每个元素都是从 1 到 MAX_SEQ_LEN 之间的随机整数
         max_context_len = max(context_lens)
@@ -410,7 +408,7 @@ class RelPositionMultiHeadedAttention(MultiHeadedAttention):
         block_tables.append(block_table)
         block_tables = torch.tensor(block_tables, dtype=torch.int, device=device)
         
-        output = torch.empty(1, num_heads, head_size, dtype=q.dtype, device=device)
+        output = torch.empty(1, self.h, self.d_k, dtype=q.dtype, device=device)
         
         attention_cuda.xl_single_query_cached_kv_attention(
             output,
@@ -531,7 +529,7 @@ def test_att_muti_layer():
         for layer, attention_layer in enumerate(attention_layers):
             if loop == 0:
                 cache_manger.prefill(layer, kv_prefill_indices, key_cache, value_cache)
-            page_output = attention_layer.infer(layer, block_size, device, head_num, head_size, num_tokens, kv_decode_indices, page_output, 
+            page_output = attention_layer.infer(layer, block_size, device, num_tokens, kv_decode_indices, page_output, 
                                                 page_output, page_output, pos_emb, cache_manger)
         pos_emb = torch.cat([pos_emb, new_pos_list[loop]], dim=1)
         print("page Output:", page_output)

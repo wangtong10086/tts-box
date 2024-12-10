@@ -95,6 +95,21 @@ class CosyVoiceModel:
                                                 min_token_text_ratio=3):
                 self.tts_speech_token_dict[uuid].append(i)
         self.llm_end_dict[uuid] = True
+    
+    def llm_job_page_without_stream(self, text, prompt_text, llm_prompt_speech_token, llm_embedding, uuid):
+        with self.llm_context:
+            for i in self.llm.inference_page_without_stream(text=text.to(self.device),
+                                                text_len=torch.tensor([text.shape[1]], dtype=torch.int32).to(self.device),
+                                                prompt_text=prompt_text.to(self.device),
+                                                prompt_text_len=torch.tensor([prompt_text.shape[1]], dtype=torch.int32).to(self.device),
+                                                prompt_speech_token=llm_prompt_speech_token.to(self.device),
+                                                prompt_speech_token_len=torch.tensor([llm_prompt_speech_token.shape[1]], dtype=torch.int32).to(self.device),
+                                                embedding=llm_embedding.to(self.device).half(),
+                                                sampling=25,
+                                                max_token_text_ratio=30,
+                                                min_token_text_ratio=3):
+                self.tts_speech_token_dict[uuid].append(i)
+        self.llm_end_dict[uuid] = True
 
     def token2wav(self, token, prompt_token, prompt_feat, embedding, uuid, finalize=False):
         with self.flow_hift_context:
@@ -273,7 +288,8 @@ class CosyVoiceModel:
         self.tts_speech_token_dict[this_uuid], self.llm_end_dict[this_uuid], self.mel_overlap_dict[this_uuid], self.hift_cache_dict[this_uuid] = [], False, None, None
 
         # Directly run the LLM job (no threading)
-        self.llm_job_without_stream(text, prompt_text, llm_prompt_speech_token, llm_embedding, this_uuid)
+        #self.llm_job_without_stream(text, prompt_text, llm_prompt_speech_token, llm_embedding, this_uuid)
+        self.llm_job_page_without_stream(text, prompt_text, llm_prompt_speech_token, llm_embedding, this_uuid)
         print("llm job over !!!")
         #print(f"self.tts_speech_token_dict[this_uuid]: {self.tts_speech_token_dict[this_uuid]}")
 
